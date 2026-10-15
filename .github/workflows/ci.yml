@@ -3,7 +3,7 @@ name: CI
 # Every push and pull request: lint the shell, run the fake-driven tests,
 # build both images on amd64 under the plain docker driver and run smoke.sh
 # against them. Release tags additionally publish multi-arch images to
-# ghcr.io/influpert/agent as :base, :claude, :base-<tag> and :claude-<tag>,
+# ghcr.io/hatchward/agent as :base, :claude, :base-<tag> and :claude-<tag>,
 # pushed with the workflow's own GITHUB_TOKEN, then create the GitHub release
 # from .github/releases/<tag>.md. bin/release is the way to cut a tag: it checks
 # the version, the commit, CI and the notes before pushing.
@@ -21,7 +21,7 @@ on:
 permissions: {}
 
 env:
-  IMAGE: ghcr.io/influpert/agent
+  IMAGE: ghcr.io/hatchward/agent
 
 jobs:
   check:

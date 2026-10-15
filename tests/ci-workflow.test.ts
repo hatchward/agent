@@ -95,10 +95,10 @@ test("publish runs only on release tags, after check and build-smoke, and pins t
 
 test("the image name is the one the README documents", async () => {
   const contents = await workflow();
-  expect(contents).toContain("IMAGE: ghcr.io/influpert/agent\n");
+  expect(contents).toContain("IMAGE: ghcr.io/hatchward/agent\n");
   const readme = await Bun.file(join(import.meta.dir, "../README.md")).text();
-  expect(readme).toContain("`ghcr.io/influpert/agent:base`");
-  expect(readme).toContain("`ghcr.io/influpert/agent:claude`");
+  expect(readme).toContain("`ghcr.io/hatchward/agent:base`");
+  expect(readme).toContain("`ghcr.io/hatchward/agent:claude`");
 });
 
 test("publish creates the GitHub release from the notes file bin/release checks for", async () => {
@@ -109,7 +109,7 @@ test("publish creates the GitHub release from the notes file bin/release checks 
   expect(release?.run).toContain('--notes-file ".github/releases/${TAG}.md"');
   const script = await Bun.file(join(import.meta.dir, "../bin/release")).text();
   expect(script).toContain('notes_path=".github/releases/${tag}.md"');
-  expect(script).toContain('REPO="influpert/agent"');
+  expect(script).toContain('REPO="hatchward/agent"');
   for (const job of ["check", "build-smoke"]) {
     expect(script).toContain(job);
   }

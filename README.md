@@ -1,7 +1,7 @@
-# influpert/agent
+# hatchward/agent
 
 The sandbox a coding agent runs in: one container per run, for any code base. Built for
-the [hatchward](https://github.com/influpert/hatchward) runner and usable by hand.
+the [hatchward](https://github.com/hatchward/core) runner and usable by hand.
 
 What the sandbox guarantees: the agent runs as an unprivileged user with an empty
 capability set and no way back to root; egress is default-DROP with a hostname
@@ -11,8 +11,8 @@ workspace is either cloned fresh or used exactly as provided.
 
 | Image | Source | Adds |
 |---|---|---|
-| `ghcr.io/influpert/agent:base` | `Dockerfile` | Debian trixie, git + git-lfs, gh, jq, tini, the egress firewall, a uid-1000 `agent` user, mise |
-| `ghcr.io/influpert/agent:claude` | `claude/Dockerfile` | Claude Code CLI (pinned) and the `agent-claude` CMD |
+| `ghcr.io/hatchward/agent:base` | `Dockerfile` | Debian trixie, git + git-lfs, gh, jq, tini, the egress firewall, a uid-1000 `agent` user, mise |
+| `ghcr.io/hatchward/agent:claude` | `claude/Dockerfile` | Claude Code CLI (pinned) and the `agent-claude` CMD |
 
 Versions will be release tags: `:base-vX.Y.Z` and `:claude-vX.Y.Z` immutable, `:base`
 and `:claude` moving; project configuration must pin a versioned tag. **Nothing publishes
@@ -162,6 +162,19 @@ can reach every allowlisted host, several of which share CDN addresses with the 
 the internet, and DNS is an open channel. A hostname-aware egress proxy is the follow-up
 that would close that.
 
+### Project-specific egress hosts
+
+Hosts only one project needs (an issue tracker, a package registry, a webhook endpoint)
+belong in the launcher, not in the image's `allow-domains.d/base`. Pass them per run:
+
+```sh
+docker run ... -e AGENT_ALLOW_DOMAINS="api.notion.com hooks.slack.com sentry.io" ghcr.io/hatchward/agent:claude-v0.4.0
+```
+
+They are unioned with the baked-in lists, resolved at boot, and filtered like any other
+entry. Hostnames only, space or comma separated. In proxy mode the variable is ignored
+(see above): the runner's proxy owns the allowlist.
+
 ## Extending: what a CLI layer supplies
 
 A layer image (`<cli>/`) builds `FROM` the base and adds exactly four
@@ -177,7 +190,7 @@ the credential is exported only into the exec'd process, and the CLI is `exec`'d
 ## Running under the hatchward runner
 
 **Today's hatchward runner does not launch this image usefully.** Its `worker.go`
-(`src/cli/internal/hostedrunner/` in influpert/hatchward) creates
+(`src/cli/internal/hostedrunner/` in hatchward/core) creates
 the container with `--network none`, no capabilities, no `-i` and no secret mounts, so
 the firewall is skipped, no credential arrives and the manifest never reaches the
 container. The runner change is a separate hatchward pull request written against this

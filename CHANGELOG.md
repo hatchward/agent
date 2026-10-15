@@ -5,6 +5,12 @@ All notable changes to the agent images are documented here. Format follows
 [Semantic Versioning](https://semver.org/). Each entry is condensed from that version's
 `.github/releases/<tag>.md`, which the publish job turns into the GitHub release.
 
+## [0.4.0]
+
+### Changed
+- Images move to `ghcr.io/hatchward/agent`; the source label, package name, and
+  docs follow the repository's move to the hatchward organization. No contract change.
+
 ## [0.3.0]
 
 ### Added

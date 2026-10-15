@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Default CMD of ghcr.io/influpert/agent:claude — run one headless Claude Code
+# Default CMD of ghcr.io/hatchward/agent:claude — run one headless Claude Code
 # session against /workspace and exit with its status.
 #
 # agent-entrypoint has already applied the firewall, provisioned the workspace,
