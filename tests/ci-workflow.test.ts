@@ -77,12 +77,10 @@ test("publish runs only on release tags, after check and build-smoke, and pins t
   const claudeTags = String(claude?.with?.tags).trim().split("\n");
   expect(baseTags).toEqual([
     "${{ env.IMAGE }}:base",
-    "${{ env.IMAGE }}:base-latest",
     "${{ env.IMAGE }}:base-${{ github.ref_name }}",
   ]);
   expect(claudeTags).toEqual([
     "${{ env.IMAGE }}:claude",
-    "${{ env.IMAGE }}:claude-latest",
     "${{ env.IMAGE }}:claude-${{ github.ref_name }}",
   ]);
   expect(String(claude?.with?.["build-args"]).trim()).toBe(

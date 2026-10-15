@@ -11,8 +11,8 @@ workspace is either cloned fresh or used exactly as provided.
 
 | Image | Source | Adds |
 |---|---|---|
-| `ghcr.io/hatchward/agent:base` (alias `:base-latest`) | `Dockerfile` | Debian trixie, git + git-lfs, gh, jq, tini, the egress firewall, a uid-1000 `agent` user, mise |
-| `ghcr.io/hatchward/agent:claude` (alias `:claude-latest`) | `claude/Dockerfile` | Claude Code CLI (pinned) and the `agent-claude` CMD |
+| `ghcr.io/hatchward/agent:base` | `Dockerfile` | Debian trixie, git + git-lfs, gh, jq, tini, the egress firewall, a uid-1000 `agent` user, mise |
+| `ghcr.io/hatchward/agent:claude` | `claude/Dockerfile` | Claude Code CLI (pinned) and the `agent-claude` CMD |
 
 Versions will be release tags: `:base-vX.Y.Z` and `:claude-vX.Y.Z` immutable, `:base`
 and `:claude` moving; project configuration must pin a versioned tag. **Nothing publishes

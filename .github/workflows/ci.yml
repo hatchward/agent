@@ -3,8 +3,7 @@ name: CI
 # Every push and pull request: lint the shell, run the fake-driven tests,
 # build both images on amd64 under the plain docker driver and run smoke.sh
 # against them. Release tags additionally publish multi-arch images to
-# ghcr.io/hatchward/agent as :base, :claude (aliased as :base-latest and :claude-latest),
-# :base-<tag> and :claude-<tag>,
+# ghcr.io/hatchward/agent as :base, :claude, :base-<tag> and :claude-<tag>,
 # pushed with the workflow's own GITHUB_TOKEN, then create the GitHub release
 # from .github/releases/<tag>.md. bin/release is the way to cut a tag: it checks
 # the version, the commit, CI and the notes before pushing.
@@ -112,7 +111,6 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE }}:base
-            ${{ env.IMAGE }}:base-latest
             ${{ env.IMAGE }}:base-${{ github.ref_name }}
           cache-from: type=registry,ref=${{ env.IMAGE }}:cache-base
           cache-to: type=registry,ref=${{ env.IMAGE }}:cache-base,mode=max
@@ -128,7 +126,6 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE }}:claude
-            ${{ env.IMAGE }}:claude-latest
             ${{ env.IMAGE }}:claude-${{ github.ref_name }}
           build-args: |
             BASE_IMAGE=${{ env.IMAGE }}@${{ steps.base.outputs.digest }}
