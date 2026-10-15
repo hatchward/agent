@@ -2,7 +2,7 @@
 # bin/release — tag and publish a release of the agent images.
 #
 # There is no version file to bump: the tag IS the version. ci.yml's publish job
-# runs on a "v*" tag and pushes ghcr.io/influpert/agent:{base,claude} plus the
+# runs on a "v*" tag and pushes ghcr.io/hatchward/agent:{base,claude} plus the
 # :base-<tag> and :claude-<tag> pins, then creates the GitHub release from the
 # notes file. This script's job is the part a reviewer never re-checks: that the
 # version actually moves forward, that the commit being tagged is really on main,
@@ -32,7 +32,7 @@
 
 set -euo pipefail
 
-REPO="influpert/agent"
+REPO="hatchward/agent"
 
 command -v gh >/dev/null || { echo "release: gh is required" >&2; exit 1; }
 
@@ -192,4 +192,4 @@ fi
 
 echo "release: pushed ${tag} at ${commit}"
 echo "release: watch https://github.com/${REPO}/actions/workflows/ci.yml"
-echo "release: images will be ghcr.io/influpert/agent:{base,claude}-${tag}"
+echo "release: images will be ghcr.io/hatchward/agent:{base,claude}-${tag}"

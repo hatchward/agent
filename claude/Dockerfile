@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# hatchward agent sandbox — Claude Code layer. → ghcr.io/influpert/agent:claude
+# hatchward agent sandbox — Claude Code layer. → ghcr.io/hatchward/agent:claude
 #
 # Adds the Claude Code CLI to the base image and a CMD that runs one headless
 # session. Everything else — firewall, workspace provisioning, privilege drop,

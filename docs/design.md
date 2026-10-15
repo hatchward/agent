@@ -3,7 +3,7 @@
 The operator-facing contract is `README.md`; this is the design record.
 
 Status: approved 2026-09-05 after two rounds of six critic passes, first drafted inside
-influpert/hatchward and extracted into this repository the same day. The hatchward side
+hatchward/core and extracted into this repository the same day. The hatchward side
 (runner launch, `~/.hatchward/secrets/`) lands as a hatchward pull request written
 against §7.
 
@@ -33,7 +33,7 @@ credentials, so no model-backed agent can run in it.
 | Privilege drop | `setpriv` with empty bounding and inheritable sets, `no_new_privs` | `gosu` (leaves the bounding set intact; any setuid binary is a route back to root with `NET_ADMIN`) |
 | Base | Debian trixie-slim, digest pinned | bookworm (superseded) |
 | Versioning | Release tags: `:base-vX.Y.Z`, `:claude-vX.Y.Z`; Dockerfiles never edited for a version | Commit SHAs in tags; `BASE_IMAGE` default pointing at a version |
-| Registry | `ghcr.io/influpert/agent:{base,claude}`, pushed with the workflow's `GITHUB_TOKEN` | A `ghcr.io/hatchward` namespace (needs a GitHub org that does not exist and a classic PAT) and `ghcr.io/influpert/hatchward-agent` — both reversed during review |
+| Registry | `ghcr.io/hatchward/agent:{base,claude}`, pushed with the workflow's `GITHUB_TOKEN` | A `ghcr.io/hatchward` namespace (needs a GitHub org that does not exist and a classic PAT) and `ghcr.io/hatchward/core-agent` — both reversed during review |
 | Credentials | Runner-local files under `~/.hatchward/secrets/`, outside `runner.yml` | Cloud-issued per-assignment tokens (control-plane scope); runner process environment |
 | Output | `json` by default; quiet stderr | `stream-json` default (a 200-turn verbose stream exceeds the runner's 1 MiB cap) |
 
@@ -56,7 +56,7 @@ image's contract as what runs inside it.
 ## 3. Layout
 
 ```
-Dockerfile                   → ghcr.io/influpert/agent:base
+Dockerfile                   → ghcr.io/hatchward/agent:base
 agent-entrypoint.sh          root phase, then setpriv → agent → exec
 init-firewall.sh             default-DROP + allowlist
 lib/prompt.sh                prompt / model / secret resolution, firewall guard
@@ -65,7 +65,7 @@ allow-ranges.d/github        GitHub's published CIDRs, snapshot
 smoke.sh                     real-container checks (CI and local)
 README.md                    operator contract
 claude/
-  Dockerfile                 → ghcr.io/influpert/agent:claude
+  Dockerfile                 → ghcr.io/hatchward/agent:claude
   agent-claude.sh            default CMD
   allow-domains.d/claude     api.anthropic.com, claude.ai
 tests/                       bun tests driving the scripts with recording fakes
@@ -155,7 +155,7 @@ Addresses are resolved once at boot, so a CDN rotation can drop a host mid-run.
 **Contract 2 closes most of that.** With `AGENT_PROXY_URL` set, the container never
 holds the real Anthropic key or GitHub token — the runner hands it the sentinel
 `hatchward-proxy-managed` instead, and a runner-owned MITM proxy (outside this image;
-see influpert/hatchward's `internal/egressproxy`) rewrites the sentinel to the real
+see hatchward/core's `internal/egressproxy`) rewrites the sentinel to the real
 credential only on requests to the handful of hosts it injects for. The image's own
 contribution is entirely defensive, not the injection itself: it trusts the runner's CA
 (so the MITM leaf verifies), routes every client through the proxy (the env vars in

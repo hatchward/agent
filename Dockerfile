@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# hatchward agent sandbox — base layer. → ghcr.io/influpert/agent:base
+# hatchward agent sandbox — base layer. → ghcr.io/hatchward/agent:base
 #
 # One container per agent run, for any code base. Deliberately minimal: git,
 # gh, the egress firewall, a non-root "agent" user, and mise so the agent can
@@ -101,7 +101,7 @@ RUN useradd --uid 10002 --user-group --no-create-home --shell /usr/sbin/nologin 
 # contract=3 adds portable execution; the standard entrypoint is preserved.
 # See docs/portable-runtime.md for the explicit portable launch contract.
 LABEL org.hatchward.agent.contract="3" \
-      org.opencontainers.image.source="https://github.com/influpert/agent"
+      org.opencontainers.image.source="https://github.com/hatchward/agent"
 
 WORKDIR /workspace
 ENTRYPOINT ["tini", "--", "agent-entrypoint"]
