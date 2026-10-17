@@ -5,7 +5,7 @@ All notable changes to the agent images are documented here. Format follows
 [Semantic Versioning](https://semver.org/). Each entry is condensed from that version's
 `.github/releases/<tag>.md`, which the publish job turns into the GitHub release.
 
-## [Unreleased]
+## [0.5.0]
 
 ### Added
 - `AGENT_SETUP` / `AGENT_SETUP_TIMEOUT`: run a project-declared setup command (such as
