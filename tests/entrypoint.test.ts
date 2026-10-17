@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -603,4 +603,242 @@ test("proxy mode: the proxy env vars reach git, gh and the final command, and gi
   const gitConfigs = (await calls(f.fake, "git")).map((c) => c.argv.join(" "));
   expect(gitConfigs).toContain(`config --system http.proxy ${PROXY_URL}`);
   expect(gitConfigs).toContain(`config --system http.sslCAInfo ${f.caFile}`);
+});
+
+// --- Project setup (AGENT_SETUP) ---------------------------------------------
+// The workspace ships an executable bin/setup that hands off to the recording
+// `setup-probe` fake, so the setup step shows up in the global call sequence
+// with its argv, environment and working directory. `timeout` is faked as well
+// (macOS has none): it runs the command and returns 124 if it outlives the
+// limit, the shape GNU timeout gives the entrypoint.
+
+const TIMEOUT_BODY = `
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -k) shift 2;;
+    -*) shift;;
+    *) break;;
+  esac
+done
+secs="$1"; shift
+mark="$FAKE_LOG.timed-out"
+"$@" & pid=$!
+(
+  sleep "$secs" & s=$!
+  trap 'kill "$s"; exit 0' TERM
+  wait "$s"; touch "$mark"; kill -TERM "$pid"
+) >/dev/null 2>&1 & watcher=$!
+wait "$pid"; rc=$?
+kill "$watcher" 2>/dev/null
+[ -e "$mark" ] && exit 124
+exit "$rc"
+`;
+
+const PROBE_BODY = `
+pwd > "$FAKE_LOG.setup-pwd"
+echo setup-says-stdout
+echo setup-says-stderr >&2
+[ -z "\${FAKE_SETUP_SLEEP-}" ] || exec sleep "$FAKE_SETUP_SLEEP"
+exit "\${FAKE_SETUP_EXIT-0}"
+`;
+
+const SETUP_SCRIPT = `#!/bin/sh\nexec setup-probe "$@"\n`;
+
+async function setupFixture(
+  options: { dir?: string; script?: string; mode?: number } = {},
+) {
+  const f = await fixture({ git: true });
+  const extra = await makeFakeBin(["setup-probe", "timeout"], {
+    "setup-probe": PROBE_BODY,
+    timeout: TIMEOUT_BODY,
+  });
+  cleanups.push(() => rm(extra.root, { force: true, recursive: true }));
+  // Share one log so the probe lands in the same sequence as the other fakes.
+  const fake = { ...f.fake, dir: `${f.fake.dir}:${extra.dir}` };
+  const binDir = join(f.workspace, options.dir ?? "", "bin");
+  await mkdir(binDir, { recursive: true });
+  const path = join(binDir, options.script ?? "setup");
+  await Bun.write(path, SETUP_SCRIPT);
+  await chmod(path, options.mode ?? 0o755);
+  return { ...f, fake };
+}
+
+const SETUP_ENV = { AGENT_REPO: "o/r", AGENT_SETUP: "bin/setup --quiet" };
+
+test("setup: unset leaves the boot unchanged and logs nothing about setup", async () => {
+  const f = await setupFixture();
+  const r = await run(f, { AGENT_REPO: "o/r" });
+  expect(r.code).toBe(0);
+  expect(r.stderr).not.toContain("setup");
+  expect(await calls(f.fake, "setup-probe")).toHaveLength(0);
+  expect(await calls(f.fake, "timeout")).toHaveLength(0);
+});
+
+test("setup: runs after the tree is synced and git is configured, in the project dir, before the command", async () => {
+  const f = await setupFixture();
+  const r = await run(f, SETUP_ENV);
+  expect(r.code).toBe(0);
+  expect(r.stderr).toContain(
+    "agent-entrypoint: running project setup: bin/setup --quiet",
+  );
+  const seq = (await sequence(f.fake)).map(
+    (s) => `${s.name} ${s.argv.join(" ")}`,
+  );
+  const at = (prefix: string) => seq.findIndex((s) => s.startsWith(prefix));
+  const probe = at("setup-probe");
+  expect(probe).toBeGreaterThan(at(`git -C ${f.workspace} reset -q --hard`));
+  expect(probe).toBeGreaterThan(at(`git -C ${f.workspace} clean -q -fd`));
+  expect(probe).toBeGreaterThan(at("git config --global user.email"));
+  expect(probe).toBeLessThan(at("final"));
+  expect(seq[probe]).toBe("setup-probe --quiet");
+  expect((await Bun.file(`${f.fake.log}.setup-pwd`).text()).trim()).toBe(
+    f.workspace,
+  );
+  const t = (await calls(f.fake, "timeout")).at(-1);
+  expect(t?.argv).toEqual(["-k", "10", "600", "./bin/setup", "--quiet"]);
+});
+
+test("setup: honours AGENT_WORKDIR for both the path and the working directory", async () => {
+  const f = await setupFixture({ dir: "apps/api" });
+  const r = await run(f, { ...SETUP_ENV, AGENT_WORKDIR: "apps/api" });
+  expect(r.code).toBe(0);
+  expect((await Bun.file(`${f.fake.log}.setup-pwd`).text()).trim()).toBe(
+    join(f.workspace, "apps/api"),
+  );
+});
+
+test("setup: runs as the agent with an empty capability set", async () => {
+  const f = await setupFixture();
+  await run(f, SETUP_ENV);
+  const drop = (await calls(f.fake, "setpriv")).find((c) =>
+    c.argv.includes("timeout"),
+  );
+  expect(drop?.argv.slice(0, 6)).toEqual([
+    "--reuid=agent",
+    "--regid=agent",
+    "--init-groups",
+    "--inh-caps=-all",
+    "--bounding-set=-all",
+    "--no-new-privs",
+  ]);
+});
+
+test("setup: no staged-secret variable reaches the script; AGENT_SETUP_PHASE and AGENT_SANDBOXED do", async () => {
+  const f = await setupFixture();
+  const r = await run(f, {
+    ...SETUP_ENV,
+    AGENT_STAGE_VARS: "GH_TOKEN ANTHROPIC_API_KEY EXTRA_SECRET",
+    GH_TOKEN: "ghp_sentinel",
+    ANTHROPIC_API_KEY: "sk-sentinel",
+    EXTRA_SECRET: "x-sentinel",
+    CLAUDE_CODE_OAUTH_TOKEN_FILE: "/run/secrets/oauth",
+  });
+  expect(r.code).toBe(0);
+  const probe = (await calls(f.fake, "setup-probe")).at(-1);
+  expect(probe?.env.AGENT_SETUP_PHASE).toBe("1");
+  expect(probe?.env.AGENT_SANDBOXED).toBe("1");
+  for (const k of Object.keys(probe?.env ?? {})) {
+    expect(k.endsWith("_FILE")).toBe(false);
+  }
+  expect(Object.values(probe?.env ?? {}).join("\n")).not.toContain("sentinel");
+  // The command itself still gets its staged files.
+  const final = (await calls(f.fake, "final")).at(-1);
+  expect(final?.env.GH_TOKEN_FILE).toBe(join(f.runDir, "secrets/gh_token"));
+  expect(final?.env.AGENT_SETUP_PHASE).toBeUndefined();
+});
+
+test("setup: its stdout and stderr both go to stderr; stdout belongs to the command", async () => {
+  const f = await setupFixture();
+  const r = await run(f, SETUP_ENV);
+  expect(r.code).toBe(0);
+  expect(r.stdout).toBe("stdin_bytes=0 stdin_is_devnull=1\n");
+  expect(r.stderr).toContain("setup-says-stdout");
+  expect(r.stderr).toContain("setup-says-stderr");
+});
+
+test("setup: a non-zero exit aborts the boot with exit 3", async () => {
+  const f = await setupFixture();
+  const r = await run(f, { ...SETUP_ENV, FAKE_SETUP_EXIT: "5" });
+  expect(r.code).toBe(3);
+  expect(r.stderr).toContain(
+    "agent-entrypoint: FATAL — setup failed (exit 5): bin/setup --quiet",
+  );
+  expect(await calls(f.fake, "final")).toHaveLength(0);
+});
+
+test("setup: a timeout aborts the boot with exit 3", async () => {
+  const f = await setupFixture();
+  const r = await run(f, {
+    ...SETUP_ENV,
+    AGENT_SETUP_TIMEOUT: "1",
+    FAKE_SETUP_SLEEP: "5",
+  });
+  expect(r.code).toBe(3);
+  expect(r.stderr).toContain("agent-entrypoint: setup timed out after 1s");
+  expect(r.stderr).toContain(
+    "agent-entrypoint: FATAL — setup failed (exit 124): bin/setup --quiet",
+  );
+  expect(await calls(f.fake, "final")).toHaveLength(0);
+}, 20_000);
+
+test("setup: an absolute, escaping, missing or non-executable path is refused by name", async () => {
+  const cases: [string, string, number?][] = [
+    [
+      "/bin/sh",
+      "AGENT_SETUP '/bin/sh' must be a relative path inside the project",
+    ],
+    [
+      "../x/setup",
+      "AGENT_SETUP '../x/setup' must be a relative path inside the project",
+    ],
+    [
+      "bin/../../setup",
+      "AGENT_SETUP 'bin/../../setup' must be a relative path inside the project",
+    ],
+    ["bin/missing", "AGENT_SETUP 'bin/missing' does not exist in the project"],
+    ["bin/setup", "AGENT_SETUP 'bin/setup' is not executable", 0o644],
+  ];
+  for (const [cmd, line, mode] of cases) {
+    const f = await setupFixture({ mode });
+    const r = await run(f, { AGENT_REPO: "o/r", AGENT_SETUP: cmd });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain(`agent-entrypoint: FATAL — ${line}`);
+    expect(await calls(f.fake, "setup-probe")).toHaveLength(0);
+    expect(await calls(f.fake, "final")).toHaveLength(0);
+  }
+}, 20_000);
+
+test("setup: a malformed AGENT_SETUP_TIMEOUT is refused", async () => {
+  const f = await setupFixture();
+  const r = await run(f, { ...SETUP_ENV, AGENT_SETUP_TIMEOUT: "10m" });
+  expect(r.code).toBe(1);
+  expect(r.stderr).toContain(
+    "agent-entrypoint: FATAL — AGENT_SETUP_TIMEOUT '10m' must be a positive number of seconds",
+  );
+});
+
+test("setup: skipped with a log line in provided-workspace mode", async () => {
+  const f = await setupFixture();
+  const r = await run(f, { AGENT_SETUP: "bin/setup" });
+  expect(r.code).toBe(0);
+  expect(r.stderr).toContain(
+    "agent-entrypoint: AGENT_SETUP is ignored in provided-workspace mode (AGENT_REPO is unset)",
+  );
+  expect(await calls(f.fake, "setup-probe")).toHaveLength(0);
+  expect(await calls(f.fake, "final")).toHaveLength(1);
+});
+
+test("setup: proxy mode hands the proxy environment to the script", async () => {
+  const f = await setupFixture();
+  const caFile = join(f.work, "proxy-ca.pem");
+  await makeTestCert(caFile);
+  const trustDir = join(f.work, "ca-trust");
+  await mkdir(trustDir);
+  const r = await run(f, proxyEnv({ ...f, caFile, trustDir }, SETUP_ENV));
+  expect(r.code).toBe(0);
+  const probe = (await calls(f.fake, "setup-probe")).at(-1);
+  expect(probe?.env.HTTPS_PROXY).toBe(PROXY_URL);
+  expect(probe?.env.https_proxy).toBe(PROXY_URL);
+  expect(probe?.env.SSL_CERT_FILE).toBe(caFile);
+  expect(probe?.env.NODE_EXTRA_CA_CERTS).toBe(caFile);
 });
