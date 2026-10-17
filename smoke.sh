@@ -10,7 +10,8 @@
 # openssl on the host for case 9's throwaway CA. The fake-driven bun tests
 # under tests/ cover the scripts' logic; this covers what fakes
 # cannot: the real privilege drop, real iptables, a real clone through the
-# firewall, and the runner's create/cp/start launch shape.
+# firewall, the runner's create/cp/start launch shape, and AGENT_SETUP
+# running a cloned project's script under the real privilege drop and timeout.
 set -euo pipefail
 
 base="${1:?base image}"
@@ -678,5 +679,73 @@ PYEOF
   echo "smoke: case 9 MITM log:"
   cat "$mitm_log" >&2
 fi
+
+# 10. Project setup (AGENT_SETUP) after a real self-clone. AGENT_SETUP must
+# name an executable inside the clone, so the script arrives the way a
+# project's own file would: AGENT_CLONE_ARGS points git clone at a bind-mounted
+# template directory, which git copies (mode included) into the clone's .git/.
+# The script reports to stderr, where the entrypoint sends setup output.
+# SMOKE_SECRET is always staged, so the *_FILE check never passes vacuously; a
+# GH_TOKEN joins it only when the host provides a real one (SMOKE_GH_TOKEN or
+# GH_TOKEN), because the entrypoint validates it with gh auth login first.
+mkdir -p "$tmp/setup-template"
+cat > "$tmp/setup-template/smoke-setup" <<'SETUPEOF'
+#!/bin/sh
+case "$1" in
+  report)
+    printf 'setup: uid=%s pwd=%s phase=%s\n' "$(id -u)" "$(pwd)" "${AGENT_SETUP_PHASE:-}"
+    printf 'setup: file_vars=%s\n' "$(env | grep -c '_FILE=' || true)"
+    grep -E '^Cap(Eff|Bnd):' /proc/self/status | sed 's/^/setup: /'
+    ;;
+  hang) exec sleep 600 ;;
+  fail) exit 7 ;;
+esac
+SETUPEOF
+chmod 755 "$tmp/setup-template/smoke-setup"
+setup_token="${SMOKE_GH_TOKEN:-${GH_TOKEN:-}}"
+setup_stage="SMOKE_SECRET"
+[ -z "$setup_token" ] || setup_stage="GH_TOKEN SMOKE_SECRET"
+SETUP_RUN=(docker run --rm "${CAPS[@]}"
+  --mount "type=bind,src=$tmp/setup-template,dst=/smoke-template,readonly"
+  -e AGENT_REPO=octocat/Hello-World -e AGENT_CLONE_ARGS=--template=/smoke-template)
+# The token reaches docker through its environment, never its argv.
+out="$(GH_TOKEN="$setup_token" SMOKE_SECRET=smoke-setup-sentinel "${SETUP_RUN[@]}" \
+  -e GH_TOKEN -e SMOKE_SECRET -e AGENT_STAGE_VARS="$setup_stage" \
+  -e AGENT_SETUP=".git/smoke-setup report" "$base" \
+  sh -c 'env | grep -c _FILE= | sed s/^/agent_file_vars=/' 2>"$last_stderr")"
+setup_err="$(cat "$last_stderr")"
+contains "$setup_err" "running project setup: .git/smoke-setup report" "setup announced"
+contains "$setup_err" "setup: uid=1000 pwd=/workspace phase=1" "setup identity and project dir"
+for cap in CapEff CapBnd; do
+  printf '%s' "$setup_err" | grep -Eq "^setup: $cap:\s+0+$" \
+    || fail "setup $cap is not empty: $(printf '%s' "$setup_err" | grep "^setup: $cap" || true)"
+done
+contains "$setup_err" "setup: file_vars=0" "no *_FILE secret variable in the setup env"
+staged_count="$(echo "$setup_stage" | wc -w | tr -d ' ')"
+contains "$out" "agent_file_vars=$staged_count" "agent command still sees the staged *_FILE variables"
+if [ -n "$setup_token" ]; then
+  pass "project setup: runs as agent with no capabilities in the project dir, GH_TOKEN and other secrets withheld"
+else
+  pass "project setup: runs as agent with no capabilities in the project dir, staged secrets withheld (no host GH_TOKEN; GH_TOKEN not exercised)"
+fi
+
+code=0
+started="$(date +%s)"
+"${SETUP_RUN[@]}" -e AGENT_SETUP=".git/smoke-setup hang" -e AGENT_SETUP_TIMEOUT=3 "$base" true \
+  >"$tmp/out10" 2>"$last_stderr" || code=$?
+elapsed=$(( $(date +%s) - started ))
+[ "$code" -eq 3 ] || fail "expected exit 3 from a hanging setup, got $code"
+[ ! -s "$tmp/out10" ] || fail "stdout was not empty: $(cat "$tmp/out10")"
+contains "$(cat "$last_stderr")" "setup timed out after 3s" "timeout reported"
+contains "$(cat "$last_stderr")" "FATAL — setup failed (exit 124)" "timeout exit status"
+[ "$elapsed" -lt 120 ] || fail "hanging setup took ${elapsed}s to be killed"
+pass "project setup: timeout kills a hanging script, container exits 3"
+
+code=0
+"${SETUP_RUN[@]}" -e AGENT_SETUP=".git/smoke-setup fail" "$base" true \
+  >"$tmp/out10" 2>"$last_stderr" || code=$?
+[ "$code" -eq 3 ] || fail "expected exit 3 from a failing setup, got $code"
+contains "$(cat "$last_stderr")" "FATAL — setup failed (exit 7)" "setup failure status"
+pass "project setup: a failing script exits 3"
 
 echo "smoke: all checks passed"
