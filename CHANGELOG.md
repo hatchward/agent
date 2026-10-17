@@ -5,6 +5,14 @@ All notable changes to the agent images are documented here. Format follows
 [Semantic Versioning](https://semver.org/). Each entry is condensed from that version's
 `.github/releases/<tag>.md`, which the publish job turns into the GitHub release.
 
+## [Unreleased]
+
+### Added
+- `AGENT_SETUP` / `AGENT_SETUP_TIMEOUT`: run a project-declared setup command (such as
+  `bin/setup`) after provisioning, as the agent, with no staged-secret variables in its
+  environment. Failure or timeout exits `3`. Unset, the boot is unchanged. Additive; no
+  contract change.
+
 ## [0.4.0]
 
 ### Changed

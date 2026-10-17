@@ -99,7 +99,12 @@ Root phase, in order:
    mode touches nothing; an empty workspace only warns here (a debugging shell must
    still be possible) and the CLI-layer CMD makes it exit 2.
 6. `safe.directory` and commit identity for the agent user only — root never runs git.
-7. `exec setpriv --reuid=agent --regid=agent --init-groups --inh-caps=-all
+7. Project setup, self-clone mode only, when `AGENT_SETUP` is set: the first word must be
+   a relative, non-escaping path to an executable under the project dir; it runs there
+   as the agent (`setpriv` as below, then `env -u` for every staged-secret variable,
+   `AGENT_SETUP_PHASE=1`, `timeout -k 10 $AGENT_SETUP_TIMEOUT`), stdin `/dev/null`,
+   output on stderr. Non-zero or timeout → exit 3.
+8. `exec setpriv --reuid=agent --regid=agent --init-groups --inh-caps=-all
    --bounding-set=-all --no-new-privs env HOME=/home/agent PATH=… "$@"`.
 
 All entrypoint output is on stderr; fd 1 belongs to the command. Root-only paths are
@@ -107,6 +112,15 @@ env-overridable (`AGENT_WORKSPACE`, `AGENT_HOME`, `AGENT_RUN_DIR`, `AGENT_ALLOW_
 `AGENT_RESOLV_CONF`, `AGENT_USER`, `AGENT_LIB_DIR`) so the scripts run under tests outside
 the image. Which variables are staged as secrets is `AGENT_STAGE_VARS`, set by each CLI
 layer's Dockerfile (base: `GH_TOKEN`), so the base never learns a CLI's credential names.
+
+Project setup is an env-var seam, not a baked-in `bin/setup` convention. The image must
+not learn project specifics, and it cannot run a project's setup script blind: stock Rails
+`bin/setup` starts a dev server and clears logs, so autodetecting it would hang or surprise.
+`AGENT_SETUP` lets the project opt in and choose its flags, and because the launcher sets
+it, not the repository, a malicious commit cannot choose what runs — only change what an
+already-chosen script does, the same trust the agent already extends to `bin/test` and git
+hooks. It fails closed (exit 3): an agent started in a half-prepared workspace produces
+confusing failures much later.
 
 ## 5. Firewall
 

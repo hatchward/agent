@@ -42,7 +42,8 @@ bounding set → the command (`agent-claude` by default, or whatever you pass).
 The root phase, in order: apply the firewall; re-own `/workspace` if a `docker cp` or a
 foreign volume left it root-owned; save a non-TTY stdin as
 `/run/hatchward/manifest.json` and detach stdin; stage secrets as agent-owned `0400`
-files; authenticate `gh` over stdin; provision the repository; drop privileges.
+files; authenticate `gh` over stdin; provision the repository; run the project's
+`AGENT_SETUP` command, if one is set, as the agent; drop privileges.
 Everything the entrypoint prints goes to stderr. fd 1 belongs to the command.
 
 ## Launching it by hand
@@ -80,6 +81,8 @@ process itself. `--init` is unnecessary; `tini` is the image's entrypoint.
 | `AGENT_BASE_BRANCH` | base | Branch to sync in self-clone mode; default is the remote's default branch. |
 | `AGENT_CLONE_ARGS` | base | Extra `git clone` arguments, e.g. `--filter=blob:none`. |
 | `AGENT_WORKDIR` | base | Relative path under `/workspace` to start in; also becomes `CLAUDE_PROJECT_DIR`. |
+| `AGENT_SETUP` | base | Command to run after provisioning, in the project dir. A word list, not a shell string, e.g. `bin/setup`. Unset or empty: no setup (the default). Self-clone mode only; see [Project setup](#project-setup). |
+| `AGENT_SETUP_TIMEOUT` | base | Seconds before the setup command is killed. Default `600`. |
 | `GH_TOKEN` / `GH_TOKEN_FILE` | base | GitHub token for private clones and pushes. Use a fine-grained token scoped to one repository, per project (a classic PAT needs `repo` and `read:org`; a GitHub App installation token is not accepted by `gh auth login` yet). It is staged to a file and given to `gh auth login` on stdin; the raw value is removed from the environment. |
 | `AGENT_STAGE_VARS` | base (set by each CLI layer's Dockerfile) | Space-separated variable names the entrypoint stages as secrets. Base: `GH_TOKEN`; Claude adds `ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN`. |
 | `AGENT_SANDBOXED` | base | Always `1`. A repository's hooks can key on it to know they run inside this sandbox. |
@@ -98,14 +101,53 @@ process itself. `--init` is unnecessary; `tini` is the image's entrypoint.
 | `AGENT_CA_FILE` | base (contract 2) | PEM certificate of the proxy's CA. Required and validated (`openssl x509 -noout`) when `AGENT_PROXY_URL` is set; installed into the system trust store before anything else runs. |
 | `AGENT_CA_TRUST_DIR` | base (contract 2) | Where the CA is installed as `hatchward-proxy.crt`. Overridable for tests only; defaults to `/usr/local/share/ca-certificates`. |
 
-Exit codes: `2` is a contract error — no prompt, no credential, an empty workspace, or the
+Exit codes: `3` is a project setup failure — the `AGENT_SETUP` command exited non-zero or
+timed out — with a `FATAL — setup failed (exit N): <cmd>` line, so a runner can tell a
+project bug from an image bug. `2` is a contract error — no prompt, no credential, an empty workspace, or the
 firewall disabled without the override — always with a named line on stderr. `1` with a
 `FATAL —` line is the firewall or a validation failure in the entrypoint — in proxy mode
 this also covers a missing/unreadable/non-PEM `AGENT_CA_FILE`, `AGENT_FIREWALL=0`, an
 over-broad `NO_PROXY`/`no_proxy`, an unresolvable or malformed `AGENT_PROXY_URL`, and any
-of the three proxy-mode canaries failing. Any other non-zero status is the failing tool's
+of the three proxy-mode canaries failing, and an `AGENT_SETUP` path that is absolute,
+escapes the project, is missing or is not executable. Any other non-zero status is the failing tool's
 own: `git` or `gh` during provisioning (their message, no `FATAL` line), or, once the CMD
 has started, the agent CLI's.
+
+## Project setup
+
+A fresh clone is rarely ready to work in: generated env files, `core.hooksPath`,
+installed dependencies and a prepared database are gitignored or machine-local. A project
+that ships a "get a fresh clone ready" script opts in by naming it:
+
+```bash
+docker run … -e AGENT_REPO=owner/repo -e AGENT_SETUP="bin/setup" agent:claude
+```
+
+After the repository is at the remote tip and git identity is set, the entrypoint runs
+`./bin/setup` in the project dir (`AGENT_WORKDIR` honoured) as the agent user, with an
+empty capability set and the firewall already on, under `timeout AGENT_SETUP_TIMEOUT`
+(default 600 seconds). The first word must be a relative path to an executable file
+inside the project; the rest are its arguments, split on whitespace with no shell
+interpretation.
+
+- The script sees `AGENT_SETUP_PHASE=1` and `AGENT_SANDBOXED=1`, so it can skip server
+  starts and interactive prompts. Its stdin is `/dev/null`.
+- No staged-secret variable (`GH_TOKEN_FILE`, `ANTHROPIC_API_KEY_FILE`,
+  `CLAUDE_CODE_OAUTH_TOKEN_FILE`, or anything in `AGENT_STAGE_VARS`) is in its
+  environment. The staged files still exist on disk and are readable by the agent user:
+  the guarantee is no environment handle, not isolation.
+- In proxy mode it keeps the proxy and CA variables, so it reaches package registries
+  the same way `git` does.
+- Its stdout and stderr both go to the container's stderr.
+- A non-zero exit or a timeout aborts the boot with exit `3`.
+- It runs on every boot, including a warm volume, so **the command must be safe to
+  re-run**. Stock Rails `bin/setup` starts a dev server unless told not to; pass the flag
+  that stops it (`AGENT_SETUP="bin/setup --skip-server"`).
+- Provided-workspace mode skips it with a log line: that mode promises the workspace is
+  used as found.
+
+Services the script depends on, such as Postgres, are the derived image's job to start
+before this entrypoint runs.
 
 ## Proxy mode (contract 2)
 

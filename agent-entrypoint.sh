@@ -241,7 +241,6 @@ as_agent git config --global --add safe.directory "$AGENT_WORKSPACE"
 as_agent git config --global user.name "${AGENT_GIT_NAME:-hatchward-agent}"
 as_agent git config --global user.email "${AGENT_GIT_EMAIL:-agent@hatchward.invalid}"
 
-# 6. Drop privileges and hand over.
 project_dir="$AGENT_WORKSPACE"
 if [ -n "${AGENT_WORKDIR:-}" ]; then
   case "/$AGENT_WORKDIR/" in
@@ -251,5 +250,47 @@ if [ -n "${AGENT_WORKDIR:-}" ]; then
   [ -d "$project_dir" ] || fatal "AGENT_WORKDIR '$AGENT_WORKDIR' does not exist under /workspace"
 fi
 cd "$project_dir"
+
+# 6. Project setup. AGENT_SETUP names a command the project ships (usually
+# bin/setup) to get a fresh clone ready: hooks, dependencies, generated env
+# files. It is repository code, so it runs as the agent, with no handle on any
+# staged secret, under a timeout; a failure aborts the boot with exit 3 rather
+# than start the agent in a half-prepared workspace.
+setup_cmd=()
+read -r -a setup_cmd <<< "${AGENT_SETUP:-}" || true
+if [ "${#setup_cmd[@]}" -gt 0 ]; then
+  if [ -z "$repo_url" ]; then
+    log "AGENT_SETUP is ignored in provided-workspace mode (AGENT_REPO is unset)"
+  else
+    setup_timeout="${AGENT_SETUP_TIMEOUT:-600}"
+    case "$setup_timeout" in
+      ''|*[!0-9]*|0) fatal "AGENT_SETUP_TIMEOUT '$setup_timeout' must be a positive number of seconds" ;;
+    esac
+    setup_exe="${setup_cmd[0]}"
+    case "/$setup_exe/" in
+      //*|*/../*) fatal "AGENT_SETUP '$setup_exe' must be a relative path inside the project" ;;
+    esac
+    [ -f "$project_dir/$setup_exe" ] \
+      || fatal "AGENT_SETUP '$setup_exe' does not exist in the project"
+    as_agent test -x "$project_dir/$setup_exe" \
+      || fatal "AGENT_SETUP '$setup_exe' is not executable"
+    setup_unset=()
+    for name in GH_TOKEN ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN $AGENT_STAGE_VARS; do
+      setup_unset+=(-u "$name" -u "${name}_FILE")
+    done
+    setup_cmd[0]="./$setup_exe"
+    log "running project setup: $AGENT_SETUP"
+    setup_status=0
+    "${DROP[@]}" env "${setup_unset[@]}" AGENT_SETUP_PHASE=1 AGENT_SANDBOXED=1 \
+      timeout -k 10 "$setup_timeout" "${setup_cmd[@]}" </dev/null >&2 || setup_status=$?
+    if [ "$setup_status" != 0 ]; then
+      [ "$setup_status" != 124 ] || log "setup timed out after ${setup_timeout}s"
+      log "FATAL — setup failed (exit $setup_status): $AGENT_SETUP"
+      exit 3
+    fi
+  fi
+fi
+
+# 7. Drop privileges and hand over.
 export CLAUDE_PROJECT_DIR="$project_dir"
 exec "${DROP[@]}" "$@"
