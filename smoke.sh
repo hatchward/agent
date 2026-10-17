@@ -756,7 +756,8 @@ docker rm -f smoke-refresh >/dev/null 2>&1 || true
 docker run -d --name smoke-refresh "${CAPS[@]}" -e AGENT_FIREWALL_REFRESH=2 "$base" sh -c '
   sleep 6
   printf "uid=%s\n" "$(id -u)"
-  pid="$(pgrep -u root -xf "bash /usr/local/bin/agent-firewall-refresh")"
+  # -o: mid-tick, the subshells of the refresher share its command line.
+  pid="$(pgrep -u root -o -xf "bash /usr/local/bin/agent-firewall-refresh")"
   [ -n "$pid" ] && echo refresher-running || echo NO_REFRESHER
   printf "refresher_ppid=%s\n" "$(ps -o ppid= -p "$pid" | tr -d " ")"
   kill "$pid" 2>/dev/null && echo KILLED || echo kill-refused
