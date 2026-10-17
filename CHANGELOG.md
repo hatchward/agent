@@ -5,6 +5,26 @@ All notable changes to the agent images are documented here. Format follows
 [Semantic Versioning](https://semver.org/). Each entry is condensed from that version's
 `.github/releases/<tag>.md`, which the publish job turns into the GitHub release.
 
+## [Unreleased]
+
+### Added
+- `AGENT_FIREWALL_REFRESH` (default `60`, `0` disables): a root-owned
+  `agent-firewall-refresh` loop re-resolves the allowlisted hostnames for the life of
+  the run and appends rules for new public addresses. It fixes intermittent timeouts to
+  GitHub hosts whose DNS rotates through addresses outside GitHub's published ranges.
+  Additive only, with the same non-public filter as at boot, and capped by
+  `AGENT_FIREWALL_RULE_CAP` (default `2048`). GitHub's ranges are re-fetched every ten
+  ticks with the stored ETag. Off in proxy mode.
+- `agent-egress-check` (run as root): reports whether every address the allowlist
+  resolves to right now is covered by a rule.
+- Boot logs the address count from each allowlist source and the meta fetch outcome;
+  `AGENT_VERBOSE=1` adds each resolved address.
+
+### Changed
+- `allow-ranges.d/github` snapshot refreshed from `api.github.com/meta`.
+- Additive; no contract change. With `AGENT_FIREWALL_REFRESH=0` the firewall behaves as
+  in 0.5.0.
+
 ## [0.5.0]
 
 ### Added

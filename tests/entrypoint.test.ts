@@ -59,8 +59,16 @@ u="$(printf '%s\\n' "\${FAKE_STAT_UIDS-}" | tr ';' '\\n' | awk -F= -v p="$3" '$1
 printf '%s\\n' "\${u:-\${FAKE_STAT_UID-1000}}"`;
 const ID_BODY = `printf '1000\\n'`;
 
+// init-firewall leaves its refresher handoff state, as the real one does when
+// it applies an allowlist; FAKE_FIREWALL_STATE=0 models the paths that leave
+// none (no egress interface, AGENT_FIREWALL=0, proxy mode).
+const INIT_FIREWALL_BODY = `[ "\${FAKE_FIREWALL_STATE-1}" = 0 ] || : > "$AGENT_RUN_DIR/firewall-seen"`;
+
+// setsid only records: its argv is the whole refresher launch (env -i ...),
+// and the scrubbed env would not carry FAKE_LOG to a recording child anyway.
 const FAKES = [
   "init-firewall",
+  "setsid",
   "setpriv",
   "final",
   "git",
@@ -73,6 +81,7 @@ const FAKES = [
 
 async function fixture(options: { git?: boolean; files?: string[] } = {}) {
   const fake = await makeFakeBin(FAKES, {
+    "init-firewall": INIT_FIREWALL_BODY,
     setpriv: SETPRIV_BODY,
     final: FINAL_BODY,
     git: GIT_BODY,
@@ -841,4 +850,91 @@ test("setup: proxy mode hands the proxy environment to the script", async () => 
   expect(probe?.env.https_proxy).toBe(PROXY_URL);
   expect(probe?.env.SSL_CERT_FILE).toBe(caFile);
   expect(probe?.env.NODE_EXTRA_CA_CERTS).toBe(caFile);
+});
+
+// --- Firewall refresher launch ------------------------------------------------
+
+function refresherLaunch(argv: string[] | undefined) {
+  expect(argv?.[0]).toBe("env");
+  expect(argv?.[1]).toBe("-i");
+  expect(argv?.at(-1)).toBe("agent-firewall-refresh");
+  return Object.fromEntries(
+    (argv ?? [])
+      .slice(2, -1)
+      .map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]),
+  );
+}
+
+test("the refresher starts detached right after the firewall, with a scrubbed environment", async () => {
+  const f = await fixture({ git: true });
+  const r = await run(f, {
+    GH_TOKEN: "ghp_secret",
+    AGENT_FIREWALL_REFRESH: "30",
+    AGENT_FIREWALL_RULE_CAP: "512",
+  });
+  expect(r.code).toBe(0);
+  const seq = await sequence(f.fake);
+  expect(seq.map((s) => s.name).slice(0, 2)).toEqual([
+    "init-firewall",
+    "setsid",
+  ]);
+  const env = refresherLaunch(seq[1]?.argv);
+  expect(Object.keys(env).sort()).toEqual(
+    [
+      "AGENT_FIREWALL_REFRESH",
+      "AGENT_FIREWALL_RULE_CAP",
+      "AGENT_RUN_DIR",
+      "PATH",
+    ].sort(),
+  );
+  expect(env.AGENT_FIREWALL_REFRESH).toBe("30");
+  expect(env.AGENT_FIREWALL_RULE_CAP).toBe("512");
+  expect(env.AGENT_RUN_DIR).toBe(f.runDir);
+  expect(seq[1]?.argv.join(" ")).not.toContain("ghp_secret");
+  // Its output stays off fd 1, which belongs to the command.
+  expect(r.stdout).toBe("stdin_bytes=0 stdin_is_devnull=1\n");
+});
+
+test("the refresher interval defaults to 60 seconds", async () => {
+  const f = await fixture({ git: true });
+  const r = await run(f);
+  expect(r.code).toBe(0);
+  const env = refresherLaunch((await calls(f.fake, "setsid"))[0]?.argv);
+  expect(env.AGENT_FIREWALL_REFRESH).toBe("60");
+});
+
+test("no refresher without an allowlist in force, with AGENT_FIREWALL=0, or with AGENT_FIREWALL_REFRESH=0", async () => {
+  const cases: Record<string, string>[] = [
+    { FAKE_FIREWALL_STATE: "0" },
+    { AGENT_FIREWALL: "0" },
+    { AGENT_FIREWALL_REFRESH: "0" },
+  ];
+  for (const extra of cases) {
+    const f = await fixture({ git: true });
+    const r = await run(f, extra);
+    expect(r.code).toBe(0);
+    expect(await calls(f.fake, "setsid")).toHaveLength(0);
+    if (extra.AGENT_FIREWALL_REFRESH === "0") {
+      expect(r.stderr).toContain(
+        "agent-entrypoint: firewall refresh disabled via AGENT_FIREWALL_REFRESH=0",
+      );
+    }
+  }
+});
+
+test("proxy mode: no refresher, even if allowlist state were present", async () => {
+  const f = await proxyFixture({ git: true });
+  const r = await run(f, proxyEnv(f));
+  expect(r.code).toBe(0);
+  expect(await calls(f.fake, "setsid")).toHaveLength(0);
+});
+
+test("a malformed AGENT_FIREWALL_REFRESH is fatal before the firewall runs", async () => {
+  const f = await fixture({ git: true });
+  const r = await run(f, { AGENT_FIREWALL_REFRESH: "-5" });
+  expect(r.code).toBe(1);
+  expect(r.stderr).toContain(
+    "agent-entrypoint: FATAL — AGENT_FIREWALL_REFRESH '-5' must be a whole number of seconds",
+  );
+  expect(await calls(f.fake, "init-firewall")).toHaveLength(0);
 });

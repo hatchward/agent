@@ -9,7 +9,7 @@
     "format:check": "biome format .",
     "lint": "biome lint .",
     "typecheck": "tsc -p tsconfig.json",
-    "shellcheck": "shellcheck agent-entrypoint.sh init-firewall.sh smoke.sh lib/prompt.sh claude/agent-claude.sh bin/release runtime/*.sh",
+    "shellcheck": "shellcheck -x agent-entrypoint.sh init-firewall.sh firewall-refresh.sh egress-check.sh smoke.sh lib/prompt.sh lib/firewall.sh claude/agent-claude.sh bin/release runtime/*.sh",
     "test": "bun test",
     "test:runtime": "python3 -m unittest discover -s runtime/tests -p 'test_*.py'"
   },

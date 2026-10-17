@@ -59,6 +59,9 @@ image's contract as what runs inside it.
 Dockerfile                   → ghcr.io/hatchward/agent:base
 agent-entrypoint.sh          root phase, then setpriv → agent → exec
 init-firewall.sh             default-DROP + allowlist
+firewall-refresh.sh          → agent-firewall-refresh, keeps the allowlist current
+egress-check.sh              → agent-egress-check, debug: are resolved addresses covered?
+lib/firewall.sh              address filter, resolution, CIDR match, meta fetch (shared)
 lib/prompt.sh                prompt / model / secret resolution, firewall guard
 allow-domains.d/base         hosts every layer needs
 allow-ranges.d/github        GitHub's published CIDRs, snapshot
@@ -140,6 +143,27 @@ Gather addresses while egress is open, then lock down. Specifically:
   from `api.github.com/meta` at boot when that unauthenticated call is not rate-limited —
   it routinely is on CI runners, and without the ranges a `git clone` can connect to a
   github.com address the boot-time resolution never saw.
+- Boot ends with a source summary: addresses resolved, ranges from `allow-ranges.d`,
+  ranges from the live meta fetch, and that fetch's outcome (`ok`, `rate-limited`,
+  `failed`). `AGENT_VERBOSE=1` adds each resolved address against its hostname.
+- **Refresh.** Boot-time resolution alone is not enough. GitHub's DNS rotates its hosts
+  through Azure-hosted addresses that `api.github.com/meta` does not publish (observed
+  2026-10-17: `20.250.119.67` for `github.com`, `20.250.119.71` for
+  `codeload.github.com`, `20.250.119.72` for `api.github.com`). The resolver caches, so
+  the three boot draws are in practice one answer, and when a later answer falls outside
+  every rule, the connection times out. `init-firewall` leaves its allowlist, loaded set
+  and iptables binary in `$AGENT_RUN_DIR` (`firewall-domains`, `firewall-seen`,
+  `firewall-iptables`), and `agent-entrypoint` starts `agent-firewall-refresh` from them,
+  detached and with a scrubbed environment, before the privilege drop. Every
+  `AGENT_FIREWALL_REFRESH` seconds (default 60, `0` off) it re-resolves those hostnames
+  and appends `-A OUTPUT -d <ip> -j ACCEPT` for each public address no loaded entry
+  covers. The policy is DROP with no terminal rule, so an appended ACCEPT takes effect
+  at once. Every tenth tick it re-fetches meta with `If-None-Match`; any failure keeps
+  the current set. It only adds, never removes, and stops at `AGENT_FIREWALL_RULE_CAP`
+  (2048). It does not run in proxy mode, with `AGENT_FIREWALL=0`, or without an
+  interface. A loop rather than hostname matches (resolved once at insert, the same
+  problem), an ipset (a package and kernel-module dependency) or a transparent proxy
+  (the runner owns that path).
 - IPv6: fatal when a v6 default route exists and ip6tables cannot be applied; a v6
   negative canary runs when a route exists.
 - `AGENT_FIREWALL=0` writes `/run/hatchward/firewall-disabled`; a CMD that would run
@@ -164,7 +188,11 @@ agent holds the credentials it was given and can reach every allowlisted host;
 `pypi.org`, `files.pythonhosted.org`, `rubygems.org`, `deb.debian.org`, the
 `githubusercontent.com` hosts and others sit on Fastly or Cloudflare anycast addresses
 shared with arbitrary third-party sites, and DNS is an open low-bandwidth channel.
-Addresses are resolved once at boot, so a CDN rotation can drop a host mid-run.
+Allowlisted hostnames are re-resolved for the life of the run (§5, Refresh), so a
+CDN rotation no longer drops a host mid-run. That widens nothing: the same names, the
+same resolver, the same filter, additive only. An attacker who can answer DNS for an
+allowlisted name could already have done so at boot. A new address takes up to one
+refresh interval to be admitted.
 
 **Contract 2 closes most of that.** With `AGENT_PROXY_URL` set, the container never
 holds the real Anthropic key or GitHub token — the runner hands it the sentinel

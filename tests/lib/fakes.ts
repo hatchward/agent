@@ -36,8 +36,13 @@ _fake_record() {
 
 const BODIES: Record<string, string> = {
   // Succeeds when the URL matches the FAKE_CURL_OK extended regex (a `-6`
-  // request instead matches FAKE_CURL6_OK); on api.github.com/meta it also
-  // prints FAKE_CURL_META_JSON. Else exit 7.
+  // request instead matches FAKE_CURL6_OK). Else exit 7.
+  //
+  // api.github.com/meta answers like the real endpoint: HTTP status
+  // FAKE_CURL_META_STATUS (default 200) printed for `-w`, an `etag:` header
+  // carrying FAKE_CURL_META_ETAG written to the `-D` file, and the body
+  // FAKE_CURL_META_JSON written to the `-o` file on a 200. A request whose
+  // If-None-Match equals FAKE_CURL_META_ETAG gets a 304 and no body.
   //
   // Proxy-mode canaries are distinguished by flag, not just URL, so a test can
   // pin the *shape* of the call the script makes, not only its outcome:
@@ -52,11 +57,15 @@ const BODIES: Record<string, string> = {
   //                        --cacert argument so a test can assert it was
   //                        given AGENT_CA_FILE.
   curl: `
-url=""; v6=0; noproxy=0; proxied=0
+url=""; v6=0; noproxy=0; proxied=0; out=""; hdr=""; wfmt=""; inm=""
 prev=""
 for a in "$@"; do
   case "$a" in http://*|https://*) url="$a";; -6) v6=1;; esac
-  case "$prev" in --noproxy) noproxy=1;; --proxy) proxied=1;; esac
+  case "$prev" in
+    --noproxy) noproxy=1;; --proxy) proxied=1;;
+    -o) out="$a";; -D) hdr="$a";; -w) wfmt="$a";;
+    -H) case "$a" in "If-None-Match: "*) inm="\${a#If-None-Match: }";; esac;;
+  esac
   prev="$a"
 done
 if [ "$proxied" = 1 ]; then
@@ -71,15 +80,30 @@ if [ "$noproxy" = 1 ]; then
 fi
 ok="\${FAKE_CURL_OK-}"; [ "$v6" = 0 ] || ok="\${FAKE_CURL6_OK-}"
 if [ -n "$ok" ] && printf '%s' "$url" | grep -Eq "$ok"; then
-  case "$url" in *api.github.com/meta*) printf '%s' "\${FAKE_CURL_META_JSON-}";; esac
+  case "$url" in *api.github.com/meta*)
+    status="\${FAKE_CURL_META_STATUS-200}"
+    etag="\${FAKE_CURL_META_ETAG-}"
+    if [ -n "$etag" ] && [ "$inm" = "$etag" ]; then status=304; fi
+    if [ -n "$hdr" ]; then
+      printf 'HTTP/2 %s\\r\\n' "$status" > "$hdr"
+      [ -z "$etag" ] || printf 'etag: %s\\r\\n' "$etag" >> "$hdr"
+    fi
+    body=""; [ "$status" != 200 ] || body="\${FAKE_CURL_META_JSON-}"
+    if [ -n "$out" ]; then printf '%s' "$body" > "$out"; else printf '%s' "$body"; fi
+    [ -z "$wfmt" ] || printf '%s' "$status"
+    ;;
+  esac
   exit 0
 fi
+[ -z "$wfmt" ] || printf '000'
 exit 7
 `,
   // getent ahostsv4 <host> → FAKE_GETENT_MAP="host=ip ip;host2=ip" (always
   // exit 0, matching real getent's "printed nothing" shape when a domain
-  // resolves to nothing). getent hosts <host> is the proxy-mode DNS canary:
-  // it fails (exit 2, nothing printed) unless the host is listed in
+  // resolves to nothing). FAKE_GETENT_MAP_<n>, when set, replaces it once the
+  // `sleep` fake has run n times — the refresher's tick n.
+  //
+  // getent hosts <host> is the proxy-mode DNS canary: it fails (exit 2, nothing printed) unless the host is listed in
   // FAKE_GETENT_HOSTS_OK (comma-separated) — simulating DNS staying reachable
   // despite the lockdown, which the script must treat as fatal.
   getent: `
@@ -93,7 +117,9 @@ case "$sub" in
     exit 2
     ;;
 esac
-printf '%s\\n' "\${FAKE_GETENT_MAP-}" | tr ';' '\\n' | while IFS='=' read -r h ips; do
+n=$(ls "$FAKE_LOG" | grep -c '[.]sleep$')
+eval "map=\\\${FAKE_GETENT_MAP_$n-\\\${FAKE_GETENT_MAP-}}"
+printf '%s\\n' "$map" | tr ';' '\\n' | while IFS='=' read -r h ips; do
   if [ "$h" = "$host" ]; then
     for ip in $ips; do printf '%s STREAM %s\\n' "$ip" "$host"; done
   fi

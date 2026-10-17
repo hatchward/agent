@@ -70,7 +70,7 @@ cleanup() {
     docker run --rm --entrypoint chmod -v "$ws":/ws "$base" -R a+rwX /ws >/dev/null 2>&1 || true
   done
   rm -rf "$tmp"
-  docker rm -f smoke-runner-shape >/dev/null 2>&1 || true
+  docker rm -f smoke-runner-shape smoke-refresh >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -747,5 +747,47 @@ code=0
 [ "$code" -eq 3 ] || fail "expected exit 3 from a failing setup, got $code"
 contains "$(cat "$last_stderr")" "FATAL — setup failed (exit 7)" "setup failure status"
 pass "project setup: a failing script exits 3"
+
+# 11. The firewall refresher: a root process the agent can neither signal nor
+# bypass, ticking (every 2s here) without widening the allowlist. The checks
+# are the container's CMD, so they run as the real agent, after the drop; a
+# `docker exec` would run as root and prove nothing.
+docker rm -f smoke-refresh >/dev/null 2>&1 || true
+docker run -d --name smoke-refresh "${CAPS[@]}" -e AGENT_FIREWALL_REFRESH=2 "$base" sh -c '
+  sleep 6
+  printf "uid=%s\n" "$(id -u)"
+  pid="$(pgrep -u root -xf "bash /usr/local/bin/agent-firewall-refresh")"
+  [ -n "$pid" ] && echo refresher-running || echo NO_REFRESHER
+  printf "refresher_ppid=%s\n" "$(ps -o ppid= -p "$pid" | tr -d " ")"
+  kill "$pid" 2>/dev/null && echo KILLED || echo kill-refused
+  kill -9 "$pid" 2>/dev/null && echo KILLED9 || echo kill9-refused
+  iptables -A OUTPUT -d 1.1.1.1 -j ACCEPT 2>/dev/null && echo IPTABLES_OK || echo iptables-refused
+  sleep 3
+  [ -d "/proc/$pid" ] && echo refresher-alive || echo REFRESHER_GONE
+  curl -fsS --max-time 4 -o /dev/null https://example.com && echo EXAMPLE_OPEN || echo example-blocked
+  curl -sS --max-time 8 -o /dev/null https://api.github.com/ && echo github-ok || echo GITHUB_BLOCKED
+  echo checks-done
+  sleep 60' >/dev/null
+for _ in $(seq 1 60); do
+  docker logs smoke-refresh 2>/dev/null | grep -q checks-done && break
+  sleep 1
+done
+code=0
+check="$(docker exec -u root smoke-refresh agent-egress-check 2>&1)" || code=$?
+out="$(docker logs smoke-refresh 2>"$last_stderr")"
+docker rm -f smoke-refresh >/dev/null
+contains "$out" "uid=1000" "checks ran as the agent"
+contains "$out" "refresher-running" "refresher started as root"
+contains "$out" "refresher_ppid=1" "refresher orphaned to tini, which reaps it"
+contains "$out" "kill-refused" "agent cannot SIGTERM the refresher"
+contains "$out" "kill9-refused" "agent cannot SIGKILL the refresher"
+contains "$out" "iptables-refused" "agent cannot run iptables"
+contains "$out" "refresher-alive" "refresher survives the agent's attempts"
+contains "$out" "example-blocked" "example.com still blocked after refresh ticks"
+contains "$out" "github-ok" "api.github.com reachable"
+contains "$(cat "$last_stderr")" "agent-firewall-refresh: refreshing every 2s" "refresher start line"
+[ "$code" -le 1 ] || fail "agent-egress-check exited $code: $check"
+contains "$check" "ok	github.com" "agent-egress-check reports coverage"
+pass "firewall refresher: root-owned, unkillable by the agent, allowlist intact"
 
 echo "smoke: all checks passed"

@@ -89,7 +89,9 @@ process itself. `--init` is unnecessary; `tini` is the image's entrypoint.
 | `AGENT_GIT_NAME`, `AGENT_GIT_EMAIL` | base | Commit identity. Defaults `hatchward-agent` / `agent@hatchward.invalid`. |
 | `AGENT_ALLOW_DOMAINS` | base | Extra egress hostnames, space or comma separated. Hostnames only; anything resolving to a private address is dropped anyway. |
 | `AGENT_FIREWALL` | base | `0` disables the firewall (debugging only). The CLI-layer CMD then refuses to run unless `AGENT_UNSAFE_NO_FIREWALL=1`. |
-| `AGENT_VERBOSE` | base | `1` logs the effective egress allowlist on stderr. |
+| `AGENT_FIREWALL_REFRESH` | base | Seconds between allowlist refreshes: the firewall re-resolves its hostnames and adds rules for new public addresses for the life of the run. Default `60`; `0` disables (boot-time resolution only, as before). Ignored in proxy mode and with `AGENT_FIREWALL=0`. |
+| `AGENT_FIREWALL_RULE_CAP` | base | Upper bound on the firewall's address rules; once reached, the refresher adds nothing more and logs one warning. Default `2048`. |
+| `AGENT_VERBOSE` | base | `1` logs the effective egress allowlist, and each address resolved for it, on stderr. |
 | `HATCHWARD_ASSIGNMENT_ACTION_SOCKET` | base | Set by the runner; passed through untouched. Unix-socket bind mounts work on Linux hosts only. |
 | stdin | base | A non-TTY stdin is saved as `/run/hatchward/manifest.json` (the runner's execution manifest) and detached. The caller must close stdin; a pipe held open blocks the boot. |
 | `AGENT_PROMPT` / `AGENT_PROMPT_FILE` | CLI layer | The prompt, in that order of precedence; else the manifest's `agent.prompt` with its `task.fields` rendered as a `## Task` section. |
@@ -194,15 +196,40 @@ answers are unioned); addresses in loopback, RFC 1918, link-local, CGNAT, multic
 reserved ranges are dropped with a warning whatever their source. Static CIDRs in
 `/etc/hatchward/allow-ranges.d/*` are permitted too — the base ships a snapshot of GitHub's
 published ranges, refreshed live from `api.github.com/meta` when that call is not
-rate-limited — so GitHub's rotating addresses stay reachable. A container
-with no non-loopback interface (`--network none`) skips the firewall; one with an
+rate-limited. Boot ends with one line counting the addresses from each source and the
+outcome of that fetch (`ok`, `rate-limited` or `failed`).
+
+Hostnames are not resolved only at boot. GitHub's DNS rotates `github.com`,
+`api.github.com` and `codeload.github.com` through addresses that are not in its
+published ranges (Azure-hosted blocks that `api.github.com/meta` does not list), so a
+client can be handed an address no rule covers, and its connection times out. A root
+process, `agent-firewall-refresh`, re-resolves the same hostnames every
+`AGENT_FIREWALL_REFRESH` seconds (default 60) and appends an `ACCEPT` rule for each new
+address that passes the same filter. A connection caught in the gap keeps retransmitting
+its SYN and goes through once the rule lands. GitHub's ranges are re-fetched every ten
+ticks with the stored ETag, and a failed or rate-limited fetch keeps the current rules.
+Rules are only added, never removed, up to `AGENT_FIREWALL_RULE_CAP`. Each addition is
+logged (`agent-firewall-refresh: allowed <address> for <host>`). The agent user cannot
+signal the process or run `iptables`.
+
+To see whether the rules in force cover what the allowlist resolves to right now:
+
+```sh
+docker exec -u root <container> agent-egress-check
+```
+
+It prints one `ok`, `UNCOVERED` or `non-public` line per resolved address, and exits `1`
+if any address is uncovered.
+
+A container with no non-loopback interface (`--network none`) skips the firewall; one with an
 interface but no `NET_ADMIN` refuses to start.
 
 **What this is and is not.** It blocks the host, the LAN, sibling containers and casual
 egress. It is not exfiltration control: the agent holds the credentials it was given and
 can reach every allowlisted host, several of which share CDN addresses with the rest of
-the internet, and DNS is an open channel. A hostname-aware egress proxy is the follow-up
-that would close that.
+the internet, and DNS is an open channel. The refresher does not change that: it
+resolves only the allowlisted hostnames, through the same resolver, with the same
+filter. A hostname-aware egress proxy is the follow-up that would close that.
 
 ### Project-specific egress hosts
 
@@ -213,8 +240,8 @@ belong in the launcher, not in the image's `allow-domains.d/base`. Pass them per
 docker run ... -e AGENT_ALLOW_DOMAINS="api.notion.com hooks.slack.com sentry.io" ghcr.io/hatchward/agent:claude-v0.5.0
 ```
 
-They are unioned with the baked-in lists, resolved at boot, and filtered like any other
-entry. Hostnames only, space or comma separated. In proxy mode the variable is ignored
+They are unioned with the baked-in lists, resolved at boot and on every refresh, and
+filtered like any other entry. Hostnames only, space or comma separated. In proxy mode the variable is ignored
 (see above): the runner's proxy owns the allowlist.
 
 ## Extending: what a CLI layer supplies
