@@ -5,7 +5,7 @@ All notable changes to the agent images are documented here. Format follows
 [Semantic Versioning](https://semver.org/). Each entry is condensed from that version's
 `.github/releases/<tag>.md`, which the publish job turns into the GitHub release.
 
-## [Unreleased]
+## [0.6.0]
 
 ### Added
 - `AGENT_FIREWALL_REFRESH` (default `60`, `0` disables): a root-owned

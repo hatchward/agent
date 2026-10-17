@@ -237,7 +237,7 @@ Hosts only one project needs (an issue tracker, a package registry, a webhook en
 belong in the launcher, not in the image's `allow-domains.d/base`. Pass them per run:
 
 ```sh
-docker run ... -e AGENT_ALLOW_DOMAINS="api.notion.com hooks.slack.com sentry.io" ghcr.io/hatchward/agent:claude-v0.5.0
+docker run ... -e AGENT_ALLOW_DOMAINS="api.notion.com hooks.slack.com sentry.io" ghcr.io/hatchward/agent:claude-v0.6.0
 ```
 
 They are unioned with the baked-in lists, resolved at boot and on every refresh, and
