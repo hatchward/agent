@@ -3,6 +3,8 @@
 !Dockerfile
 !agent-entrypoint.sh
 !init-firewall.sh
+!firewall-refresh.sh
+!egress-check.sh
 !lib/
 !allow-domains.d/
 !allow-ranges.d/

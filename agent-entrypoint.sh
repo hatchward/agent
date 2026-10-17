@@ -5,6 +5,8 @@
 # ownership, capture stdin, stage secrets and provision the repository; then it
 # drops to the unprivileged "agent" user with an empty capability bounding set
 # and execs the command (the CLI layer's CMD, or whatever the caller passed).
+# One root process outlives the drop: agent-firewall-refresh, which keeps the
+# egress allowlist current and which the agent user cannot signal.
 #
 # Two provisioning modes:
 #   self-clone          AGENT_REPO is set: clone an empty /workspace over HTTPS,
@@ -108,7 +110,31 @@ DROP=(setpriv --reuid="$AGENT_USER" --regid="$AGENT_USER" --init-groups
 as_agent() { "${DROP[@]}" "$@"; }
 
 # 1. Firewall first: nothing below may run with unrestricted egress.
+refresh="${AGENT_FIREWALL_REFRESH:-60}"
+case "$refresh" in
+  ''|*[!0-9]*) fatal "AGENT_FIREWALL_REFRESH '$refresh' must be a whole number of seconds" ;;
+esac
 init-firewall
+
+# Keep the allowlist current for the life of the run: a root-owned loop that
+# re-resolves the same hostnames and appends rules for new public addresses.
+# Only when init-firewall left an allowlist in force (its state file), so never
+# with AGENT_FIREWALL=0, in proxy mode, or with no egress interface. Launched
+# from a subshell that exits at once, so it is orphaned to tini, which reaps
+# it; the exec'd command, which keeps this PID, never has it as a child. Off
+# fd 1, and with none of this phase's environment: the raw secret variables
+# are still set here.
+if [ -f "$AGENT_RUN_DIR/firewall-seen" ] && [ -z "${AGENT_PROXY_URL:-}" ] \
+  && [ "${AGENT_FIREWALL:-1}" != "0" ]; then
+  if [ "$refresh" = 0 ]; then
+    log "firewall refresh disabled via AGENT_FIREWALL_REFRESH=0"
+  else
+    (setsid env -i PATH="$PATH" AGENT_RUN_DIR="$AGENT_RUN_DIR" AGENT_FIREWALL_REFRESH="$refresh" \
+      ${AGENT_LIB_DIR:+AGENT_LIB_DIR="$AGENT_LIB_DIR"} \
+      ${AGENT_FIREWALL_RULE_CAP:+AGENT_FIREWALL_RULE_CAP="$AGENT_FIREWALL_RULE_CAP"} \
+      agent-firewall-refresh </dev/null >&2 &)
+  fi
+fi
 
 # The run dir must stay traversable by the agent (umask 077 above would make a
 # fresh one root-only): its files are agent-owned, the directory is root's.

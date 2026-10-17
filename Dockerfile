@@ -83,7 +83,10 @@ ENV MISE_TRUSTED_CONFIG_PATHS=/workspace \
 
 COPY --chmod=755 init-firewall.sh /usr/local/bin/init-firewall
 COPY --chmod=755 agent-entrypoint.sh /usr/local/bin/agent-entrypoint
+COPY --chmod=755 firewall-refresh.sh /usr/local/bin/agent-firewall-refresh
+COPY --chmod=755 egress-check.sh /usr/local/bin/agent-egress-check
 COPY --chmod=644 lib/prompt.sh /usr/local/lib/hatchward/prompt.sh
+COPY --chmod=644 lib/firewall.sh /usr/local/lib/hatchward/firewall.sh
 COPY --chmod=644 allow-domains.d/base /etc/hatchward/allow-domains.d/base
 COPY --chmod=644 allow-ranges.d/github /etc/hatchward/allow-ranges.d/github
 

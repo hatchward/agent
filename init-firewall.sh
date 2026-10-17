@@ -27,12 +27,20 @@ AGENT_ALLOW_DIR="${AGENT_ALLOW_DIR:-/etc/hatchward/allow-domains.d}"
 AGENT_RANGES_DIR="${AGENT_RANGES_DIR:-/etc/hatchward/allow-ranges.d}"
 AGENT_RUN_DIR="${AGENT_RUN_DIR:-/run/hatchward}"
 AGENT_RESOLV_CONF="${AGENT_RESOLV_CONF:-/etc/resolv.conf}"
+AGENT_LIB_DIR="${AGENT_LIB_DIR:-/usr/local/lib/hatchward}"
+
+# shellcheck source=lib/firewall.sh
+. "$AGENT_LIB_DIR/firewall.sh"
 
 log() { echo "init-firewall: $*" >&2; }
 fatal() { log "FATAL — $*"; exit 1; }
 verbose() { if [ "${AGENT_VERBOSE:-0}" = "1" ]; then log "$@"; fi; }
 
 mkdir -p "$AGENT_RUN_DIR"
+# State for agent-firewall-refresh is written only once this run's rules are
+# applied; a restarted container must not inherit the previous run's.
+rm -f "$AGENT_RUN_DIR/firewall-domains" "$AGENT_RUN_DIR/firewall-seen" \
+  "$AGENT_RUN_DIR/firewall-iptables" "$AGENT_RUN_DIR/github-meta.etag"
 
 if [ "${AGENT_FIREWALL:-1}" = "0" ]; then
   log "DISABLED via AGENT_FIREWALL=0 — agent can reach host services"
@@ -47,10 +55,6 @@ if ! ip -o link show | grep -v ': lo:' | grep -q .; then
   log "no egress interface; firewall not required"
   exit 0
 fi
-
-resolve_v4() {
-  getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | sort -u || true
-}
 
 # --- Proxy mode (contract 2) --------------------------------------------------
 # AGENT_PROXY_URL set: egress is locked to the proxy alone, nothing else. No
@@ -205,7 +209,7 @@ hostname_ok() {
 
 domains_file="$(mktemp)"
 addr_file="$(mktemp)"
-trap 'rm -f "$domains_file" "$addr_file"' EXIT
+trap 'rm -f "$domains_file" "$addr_file" "${meta_body:-}"' EXIT
 
 if [ -d "$AGENT_ALLOW_DIR" ]; then
   for f in "$AGENT_ALLOW_DIR"/*; do
@@ -220,27 +224,9 @@ done
 sort -u -o "$domains_file" "$domains_file"
 
 # --- Gather phase (egress still open): resolve to addresses -------------------
-# Non-public IPv4 ranges: loopback, RFC1918, link-local, CGNAT, multicast,
-# reserved (class E), benchmark, documentation, "this network", broadcast.
-# Matches a bare address or a CIDR (the GitHub meta list is CIDRs).
-non_public_v4() {
-  case "$1" in
-    0.*|10.*|127.*|169.254.*|192.168.*|255.255.255.255) return 0 ;;
-    172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;;
-    100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*) return 0 ;;
-    22[4-9].*|23[0-9].*|24[0-9].*|25[0-5].*) return 0 ;;
-    198.1[89].*|192.0.0.*|192.0.2.*|198.51.100.*|203.0.113.*) return 0 ;;
-  esac
-  return 1
-}
-
-# Resolve every hostname several times: round-robin records (github.com hands
-# out one of several addresses per query) would otherwise leave the address a
-# later client gets outside the rule set.
-resolve_v4_union() {
-  { resolve_v4 "$1"; resolve_v4 "$1"; resolve_v4 "$1"; } | sort -u
-}
-
+# non_public_v4 and resolve_v4_union live in lib/firewall.sh, shared with the
+# refresher so a later address passes the same filter as a boot-time one.
+n_resolved=0
 while IFS= read -r d; do
   [ -n "$d" ] || continue
   found=0
@@ -250,6 +236,8 @@ while IFS= read -r d; do
       continue
     fi
     echo "$ip" >> "$addr_file"
+    verbose "resolved $d -> $ip"
+    n_resolved=$((n_resolved + 1))
     found=1
   done
   [ "$found" = 1 ] || log "WARNING — '$d' resolved to no public IPv4 address; it will be unreachable"
@@ -260,6 +248,7 @@ done < "$domains_file"
 # live api.github.com/meta fetch below is rate-limited for unauthenticated
 # callers and CI runners hit that limit routinely. Filtered like everything
 # else, so a file cannot smuggle in a private range.
+n_static=0
 if [ -d "$AGENT_RANGES_DIR" ]; then
   for f in "$AGENT_RANGES_DIR"/*; do
     [ -f "$f" ] || continue
@@ -270,14 +259,19 @@ if [ -d "$AGENT_RANGES_DIR" ]; then
         continue
       fi
       echo "$cidr" >> "$addr_file"
+      n_static=$((n_static + 1))
     done < <(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$f" | grep -v '^$' || true)
   done
 fi
 
 # GitHub's live published ranges, when reachable: its endpoints rotate across
 # addresses a single boot-time resolution would miss. Best effort — a failure
-# leaves the snapshot and the resolved addresses in place.
-if meta="$(curl -fsS --connect-timeout 5 --max-time 10 https://api.github.com/meta 2>/dev/null)" && [ -n "$meta" ]; then
+# leaves the snapshot and the resolved addresses in place. The ETag is kept so
+# the refresher's later fetches cost a 304 when nothing changed.
+n_meta=0
+meta_body="$(mktemp)"
+meta_status="$(github_meta_fetch "$meta_body" "$AGENT_RUN_DIR/github-meta.etag")"
+if [ "$meta_status" = ok ]; then
   while IFS= read -r cidr; do
     [ -n "$cidr" ] || continue
     if non_public_v4 "$cidr"; then
@@ -285,10 +279,12 @@ if meta="$(curl -fsS --connect-timeout 5 --max-time 10 https://api.github.com/me
       continue
     fi
     echo "$cidr" >> "$addr_file"
-  done < <(printf '%s' "$meta" | jq -r '(.web // []) + (.api // []) + (.git // []) | .[]' 2>/dev/null | grep -F '.' || true)
+    n_meta=$((n_meta + 1))
+  done < <(github_meta_ranges "$meta_body")
 else
-  log "WARNING — could not fetch api.github.com/meta; relying on the shipped range snapshot and resolved addresses"
+  log "WARNING — could not fetch api.github.com/meta; relying on the shipped range snapshot and resolved addresses ($meta_status)"
 fi
+rm -f "$meta_body"
 sort -u -o "$addr_file" "$addr_file"
 
 # --- Apply phase: lock down, then permit the gathered set --------------------
@@ -360,5 +356,12 @@ for _ in 1 2 3; do
 done
 [ "$ok" = 1 ] || log "WARNING — api.github.com unreachable after 3 tries; allowlist may be too tight or resolved addresses rotated"
 
+# Hand the effective allowlist and the loaded set to agent-firewall-refresh.
+# Written last, so their presence means "these rules are in force".
+cp "$domains_file" "$AGENT_RUN_DIR/firewall-domains"
+cp "$addr_file" "$AGENT_RUN_DIR/firewall-seen"
+echo "$IPT" > "$AGENT_RUN_DIR/firewall-iptables"
+
 verbose "allowlist: $(tr '\n' ' ' < "$domains_file")"
+log "sources — $n_resolved resolved, $n_static from allow-ranges.d, $n_meta from api.github.com/meta ($meta_status)"
 log "default-DROP active — $count v4 targets + loopback/DNS/established permitted; example.com blocked"

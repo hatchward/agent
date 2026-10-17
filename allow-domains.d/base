@@ -2,7 +2,8 @@
 # starts a comment. CLI layers add their own file beside this one, and
 # AGENT_ALLOW_DOMAINS extends the set at runtime.
 #
-# Addresses are resolved once at boot (see init-firewall.sh). Anything that
+# Addresses are resolved at boot (see init-firewall.sh) and again every
+# AGENT_FIREWALL_REFRESH seconds (see firewall-refresh.sh). Anything that
 # resolves to a private, loopback, link-local, CGNAT or multicast address is
 # dropped regardless of being listed here.
 
