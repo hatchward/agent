@@ -2,10 +2,46 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 RUN = Path('/run/hatchward')
+WORKSPACE = '/workspace'
+
+
+class CloneError(Exception):
+    """A clone failure, already reduced to one credential-free line."""
+
+
+def clone_failure(repo, stderr, returncode, proxy):
+    lines = [line.strip() for line in stderr.decode(errors='replace').splitlines() if line.strip()]
+    errors = [line.split(':', 1)[1].strip() for line in lines if line.startswith(('fatal:', 'error:'))]
+    # git's first fatal/error line names the cause; later ones are generic advice.
+    cause = errors[0] if errors else (lines or [f'git exited with status {returncode}'])[-1]
+    # The proxy URL carries the gateway token; strip it and any URL userinfo.
+    password = urlsplit(proxy).password if proxy else None
+    for secret in filter(None, (proxy, password)):
+        cause = cause.replace(secret, '[redacted]')
+    cause = re.sub(r'(://)[^/@\s]+@', r'\1[redacted]@', cause)
+    return CloneError(f'clone of {repo} failed: {cause[:400]}')
+
+
+def clone_repository(config, env):
+    """Clone the routed repository into the empty workspace, as the standard entrypoint does."""
+    repo = config['env'].get('AGENT_REPO')
+    if not repo:
+        return
+    branch = config['env'].get('AGENT_BASE_BRANCH')
+    env = dict(env, GIT_TERMINAL_PROMPT='0')
+    clone = ['git', 'clone', '-q', *(['--branch', branch] if branch else []), '--',
+             f'https://github.com/{repo}.git', WORKSPACE]
+    submodules = ['git', '-C', WORKSPACE, 'submodule', '-q', 'update', '--init', '--recursive']
+    for command in (clone, submodules):
+        result = subprocess.run(command, env=env, stdin=subprocess.DEVNULL, capture_output=True)
+        if result.returncode:
+            raise clone_failure(repo, result.stderr, result.returncode, config['proxyUrl'])
 
 
 def main():
@@ -39,15 +75,22 @@ def main():
                        ('user.email', 'agent@hatchward.invalid')]:
         subprocess.run(['git', 'config', '--global', '--replace-all', key, value], env=env, check=True)
     subprocess.run(['git', 'config', '--global', 'credential.helper', '!gh auth git-credential'], env=env, check=True)
-    os.chdir('/workspace')
+    clone_repository(config, env)
+    os.chdir(WORKSPACE)
     fd = os.open('/dev/null', os.O_RDONLY)
     os.dup2(fd, 0)
     os.close(fd)
     os.execvpe(sys.argv[1], sys.argv[1:], env)
 
 
-if __name__ == '__main__':
+def cli():
     try:
         main()
+    except CloneError as error:
+        sys.exit(f'hatchward-run: {error}')
     except Exception:
         sys.exit('hatchward-run: workload preparation failed')
+
+
+if __name__ == '__main__':
+    cli()

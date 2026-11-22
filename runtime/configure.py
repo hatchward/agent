@@ -1,14 +1,39 @@
-"""Accept public trust material and literal proxy sentinels, never credentials."""
+"""Accept public trust material, literal proxy sentinels and a routed repository, never credentials."""
 import json
 import os
 from pathlib import Path
+import re
 import ssl
+import subprocess
 import sys
 from urllib.parse import urlsplit
 
 RUN = Path('/run/hatchward')
 SENTINEL = 'hatchward-proxy-managed'
 ALLOWED = {'GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'}
+# Real (non-sentinel) values naming the repository hatchward-run clones.
+REPOSITORY_KEYS = {'AGENT_REPO', 'AGENT_BASE_BRANCH'}
+REPOSITORY = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
+
+
+def valid_branch(name):
+    if not isinstance(name, str) or not name or name.startswith('-'):
+        return False
+    result = subprocess.run(['git', 'check-ref-format', '--branch', name], cwd='/',
+                            env={'PATH': os.environ.get('PATH', '/usr/bin:/bin')},
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
+
+
+def validate_env(env):
+    credentials = {k: v for k, v in env.items() if k not in REPOSITORY_KEYS}
+    if set(credentials) - ALLOWED or any(v != SENTINEL for v in credentials.values()):
+        raise ValueError('only literal proxy sentinels are accepted')
+    repo = env.get('AGENT_REPO')
+    if 'AGENT_REPO' in env and not (isinstance(repo, str) and REPOSITORY.fullmatch(repo)):
+        raise ValueError('AGENT_REPO must be owner/name')
+    if 'AGENT_BASE_BRANCH' in env and ('AGENT_REPO' not in env or not valid_branch(env['AGENT_BASE_BRANCH'])):
+        raise ValueError('AGENT_BASE_BRANCH must be a valid branch of AGENT_REPO')
 
 
 def validate_config(value):
@@ -17,8 +42,7 @@ def validate_config(value):
     ca, proxy, env = value.get('ca', ''), value.get('proxyUrl', ''), value.get('env', {})
     if not isinstance(ca, str) or not isinstance(proxy, str) or not isinstance(env, dict):
         raise ValueError('invalid configuration types')
-    if set(env) - ALLOWED or any(v != SENTINEL for v in env.values()):
-        raise ValueError('only literal proxy sentinels are accepted')
+    validate_env(env)
     if bool(ca) != bool(proxy) or (env and not proxy):
         raise ValueError('proxy and public CA must be configured together')
     if proxy:
