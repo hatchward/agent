@@ -15,7 +15,7 @@ chmod 0700 /hatchward-backing
 [ ! -e /hatchward-backing/quota.ext4 ]
 truncate -s "${HATCHWARD_DISK_MIB}M" /hatchward-backing/quota.ext4
 mke2fs -q -F -t ext4 -m 0 -O ^has_journal /hatchward-backing/quota.ext4
-mount.fuse3 hatchward-fuse2fs#/hatchward-backing/quota.ext4 /hatchward-bounded -o allow_other,default_permissions,nosuid,nodev,drop_privileges &
+mount.fuse3 hatchward-fuse2fs#/hatchward-backing/quota.ext4 /hatchward-bounded -o allow_other,default_permissions,fakeroot,nosuid,nodev,drop_privileges &
 fuse_pid=$!
 for _ in $(seq 1 100); do
   mountpoint -q /hatchward-bounded && break

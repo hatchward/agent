@@ -41,9 +41,10 @@ host networking.
 
 After `/run/hatchward/ready` appears, `hatchward-configure` accepts stdin JSON
 `{"ca":"public PEM CA","proxyUrl":"http://hatchward:token@127.0.0.1:3128","env":{}}`.
-Empty CA and proxy enable networkless execution. Environment keys are restricted
+Empty CA and proxy enable networkless execution. Credential keys are restricted
 to GitHub/Anthropic credential names and values must be the literal
-`hatchward-proxy-managed`; real provider credentials remain on the host. It
+`hatchward-proxy-managed`; real provider credentials remain on the host. The
+only other keys are the routed repository (below), whose values are real. It
 creates a bounded CA bundle and protected runtime configuration. `hatchward-import`
 extracts a stdin tar as the agent, without adopting archive owners or privileged
 modes. `hatchward-run COMMAND...` accepts a JSON execution manifest on stdin,
@@ -52,6 +53,64 @@ uid 1000 with empty capabilities. The runner removes the assignment container an
 private volume on completion or cancellation. A gateway or FUSE child exit terminates
 the supervisor so daemon failure cannot silently leave a usable sandbox; ordinary
 adopted workload children are reaped without terminating the assignment.
+
+## Routed repository (`org.hatchward.agent.clone="1"`)
+
+Images labelled `org.hatchward.agent.clone="1"` can clone the assignment's
+repository themselves instead of receiving the runner's local folder through
+`hatchward-import`. The runner uses this when a project routes tickets across
+several repositories.
+
+1. **Configure.** The `hatchward-configure` `env` object may carry two more
+   keys beside the credential sentinels. Their values are real, not the sentinel:
+   - `AGENT_REPO` must match `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$` (the whole value;
+     a trailing newline is rejected).
+   - `AGENT_BASE_BRANCH` must pass `git check-ref-format --branch` and must not
+     start with `-`. It may be absent. It is rejected without `AGENT_REPO`.
+
+   Any other value is rejected like any other bad key: a non-zero exit with the
+   generic configure error. `AGENT_REPO` needs network, so the proxy and CA must
+   be configured, as for the credential keys.
+2. **Clone.** With `AGENT_REPO` configured, the runner skips `hatchward-import`,
+   so `/workspace` starts empty. `hatchward-run` first writes the manifest and the
+   agent's Git configuration, then clones before it executes the image command:
+   `git clone [--branch AGENT_BASE_BRANCH] https://github.com/AGENT_REPO.git /workspace`,
+   then `git submodule update --init --recursive`. It runs as uid 1000 with the
+   workload environment: the configured proxy, the CA bundle, and
+   `GH_TOKEN=hatchward-proxy-managed`. Git authenticates through
+   `gh auth git-credential` with that sentinel, which the host proxy swaps for
+   the real token, as the standard entrypoint does. Without `AGENT_BASE_BRANCH`
+   the clone checks out the remote's default branch. Terminal prompts are off,
+   so a missing credential fails instead of hanging. The checkout matches the
+   standard entrypoint's self-clone of an empty workspace: local branch = base
+   branch at the remote tip, `origin` = `https://github.com/AGENT_REPO.git`,
+   `origin/HEAD` set, and submodules initialised. `AGENT_REPO` and
+   `AGENT_BASE_BRANCH` stay in the image command's environment.
+3. **Failure.** If the clone or submodule step fails, `hatchward-run` exits 1
+   without running the image command. It prints one stderr line:
+   `hatchward-run: clone of OWNER/NAME failed: CAUSE`. `CAUSE` is git's first
+   `fatal:`/`error:` line, capped at 400 characters, with the proxy URL, its
+   token and any URL userinfo replaced by `[redacted]`. Other preparation
+   failures keep the generic `hatchward-run: workload preparation failed`.
+4. **Unchanged without `AGENT_REPO`.** No clone runs and no Git command beyond
+   the existing configuration runs.
+
+The bounded filesystem is mounted with fuse2fs `fakeroot`. Debian trixie's
+fuse2fs (1.47.2) otherwise refuses `open(O_CREAT|O_RDWR, 0444)`, the call git
+uses for every loose object, so no git write (clone, add, commit) could succeed.
+`fakeroot` only skips fuse2fs's own permission checks. The kernel still enforces
+modes and ownership through `default_permissions`, and new files are still owned
+by the caller. `docker_runtime.py` asserts that the workload cannot chmod, chown,
+unlink or create in root-owned paths.
+
+**Known gap: submodules.** The same fuse2fs ignores `O_TRUNC` on open, so
+rewriting an existing file with shorter content leaves the old tail in place.
+Git writes a submodule's `.git` file twice (absolute, then a shorter relative
+path), so the stale tail corrupts it and `git submodule update --init` fails.
+A routed repository with submodules therefore fails with the clone error line
+until fuse2fs is upgraded (1.47.4 or later). The same bug affects any shell `>`
+redirect over an existing file in the sandbox. Repositories without submodules
+clone and commit normally.
 
 Validation commands (local, no publishing):
 
@@ -62,7 +121,10 @@ python3 -m unittest discover -s runtime/tests -p 'test_*.py'
 python3 runtime/tests/docker_runtime.py agent:macos-base
 ```
 
-`docker_runtime.py` checks actual import/run behavior, all persistent process
+`docker_runtime.py` checks actual import/run behavior, git object writes, the
+routed-repository clone (against bare fixture repositories through
+`url.insteadOf`, since the container has no network; this does not exercise the
+proxy path to github.com) and its failure line, all persistent process
 capability sets, protected paths, adversarial PATH shadowing, and shared filesystem
 exhaustion, orphan reaping, and shutdown on gateway failure. Pass a second size argument (for example `1024`) to test the Claude
 image, which also executes `claude --version`. Native Linux

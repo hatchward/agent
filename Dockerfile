@@ -102,8 +102,10 @@ RUN useradd --uid 10002 --user-group --no-create-home --shell /usr/sbin/nologin 
     chmod 0755 /usr/local/lib/hatchward/runtime
 
 # contract=3 adds portable execution; the standard entrypoint is preserved.
+# clone=1: portable hatchward-run clones a configured AGENT_REPO itself.
 # See docs/portable-runtime.md for the explicit portable launch contract.
 LABEL org.hatchward.agent.contract="3" \
+      org.hatchward.agent.clone="1" \
       org.opencontainers.image.source="https://github.com/hatchward/agent"
 
 WORKDIR /workspace
