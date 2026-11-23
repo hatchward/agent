@@ -95,22 +95,20 @@ several repositories.
 4. **Unchanged without `AGENT_REPO`.** No clone runs and no Git command beyond
    the existing configuration runs.
 
-The bounded filesystem is mounted with fuse2fs `fakeroot`. Debian trixie's
-fuse2fs (1.47.2) otherwise refuses `open(O_CREAT|O_RDWR, 0444)`, the call git
-uses for every loose object, so no git write (clone, add, commit) could succeed.
+The bounded filesystem is served by fuse2fs 1.47.4, built from a pinned,
+checksum-verified e2fsprogs release in the `Dockerfile`'s `fuse2fs` stage.
+Debian trixie's 1.47.2 ignores `O_TRUNC` on open, so a shorter rewrite (a git
+submodule's `.git` file, any shell `>` over an existing file) kept the old
+tail; trixie has no newer package or backport. `docker_runtime.py` asserts that
+`O_TRUNC` truncates and that the routed-repository clone initialises a submodule.
+
+It is mounted with fuse2fs `fakeroot`. fuse2fs (1.47.4 included) otherwise
+refuses `open(O_CREAT|O_RDWR, 0444)`, the call git uses for every loose object,
+so no git write (clone, add, commit) could succeed.
 `fakeroot` only skips fuse2fs's own permission checks. The kernel still enforces
 modes and ownership through `default_permissions`, and new files are still owned
 by the caller. `docker_runtime.py` asserts that the workload cannot chmod, chown,
 unlink or create in root-owned paths.
-
-**Known gap: submodules.** The same fuse2fs ignores `O_TRUNC` on open, so
-rewriting an existing file with shorter content leaves the old tail in place.
-Git writes a submodule's `.git` file twice (absolute, then a shorter relative
-path), so the stale tail corrupts it and `git submodule update --init` fails.
-A routed repository with submodules therefore fails with the clone error line
-until fuse2fs is upgraded (1.47.4 or later). The same bug affects any shell `>`
-redirect over an existing file in the sandbox. Repositories without submodules
-clone and commit normally.
 
 Validation commands (local, no publishing):
 
@@ -121,8 +119,8 @@ python3 -m unittest discover -s runtime/tests -p 'test_*.py'
 python3 runtime/tests/docker_runtime.py agent:macos-base
 ```
 
-`docker_runtime.py` checks actual import/run behavior, git object writes, the
-routed-repository clone (against bare fixture repositories through
+`docker_runtime.py` checks actual import/run behavior, git object writes,
+`O_TRUNC`, the routed-repository clone with a submodule (against bare fixture repositories through
 `url.insteadOf`, since the container has no network; this does not exercise the
 proxy path to github.com) and its failure line, all persistent process
 capability sets, protected paths, adversarial PATH shadowing, and shared filesystem

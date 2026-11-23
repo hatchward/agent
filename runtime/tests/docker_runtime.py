@@ -98,6 +98,12 @@ assert pathlib.Path('/workspace/sentinel').read_text()=='import-sentinel'
 # git creates every loose object with open(O_CREAT|O_RDWR, 0444); fuse2fs must allow it.
 fd=os.open('/workspace/readonly-create',os.O_CREAT|os.O_EXCL|os.O_RDWR,0o444);os.write(fd,b'x');os.close(fd)
 git=lambda *a: subprocess.run(['git','-C','/workspace/repo',*a],check=True,capture_output=True)
+# O_TRUNC must truncate: a shorter rewrite (git's submodule .git file, any shell `>`) keeps no old tail.
+pathlib.Path('/tmp/trunc').write_bytes(b'0123456789\\n')
+fd=os.open('/tmp/trunc',os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o644);os.write(fd,b'ab\\n');os.close(fd)
+assert pathlib.Path('/tmp/trunc').read_bytes()==b'ab\\n',pathlib.Path('/tmp/trunc').read_bytes()
+subprocess.run(['bash','-c','echo 0123456789 > /tmp/trunc && echo ab > /tmp/trunc'],check=True)
+assert pathlib.Path('/tmp/trunc').read_bytes()==b'ab\\n',pathlib.Path('/tmp/trunc').read_bytes()
 subprocess.run(['git','init','-q','/workspace/repo'],check=True);pathlib.Path('/workspace/repo/f').write_text('x');git('add','f');git('commit','-qm','probe')
 # fakeroot skips fuse2fs's own checks; the kernel (default_permissions) must still deny these.
 for name,op in [('chmod',lambda: os.chmod('/run/hatchward/config.json',0o666)),
@@ -122,7 +128,7 @@ with open('/workspace/large','wb') as f:
 try: pathlib.Path('/home/agent/overflow').write_bytes(bytes(1048576))
 except OSError as e: assert e.errno==errno.ENOSPC
 else: raise AssertionError('home quota bypass')
-print('PASS runtime import, manifest, privileges, protected paths, git object writes, shared disk quota')'''
+print('PASS runtime import, manifest, privileges, protected paths, git object writes, O_TRUNC, shared disk quota')'''
     result=docker('exec','-i',name,'hatchward-run','/usr/bin/python3','-c',script.replace('SIZE_MIB', str(size_mib)),data=b'{"agent":{}}')
     print(result.stdout.decode())
     docker('exec', '--user', '10002:10002', name, '/usr/bin/python3', '-c', '''import pathlib,os,signal
@@ -143,17 +149,20 @@ finally:
 # Routed-repository clone (AGENT_REPO). The network is off, so git's url.insteadOf
 # points https://github.com/hatchward-fixture/ at a bare repository the agent builds
 # under /tmp. This proves the configure keys, the clone, branch selection, a later
-# agent commit and failure reporting inside the real sandbox, not the proxy path to
-# github.com. No submodule: fuse2fs 1.47.2 ignores O_TRUNC, which corrupts a
-# submodule's .git file (docs/portable-runtime.md, "Known gap: submodules");
-# runtime/tests/test_run.py covers submodule initialisation on a host filesystem.
+# agent commit, submodule initialisation and failure reporting inside the real
+# sandbox, not the proxy path to github.com. The submodule needs O_TRUNC: git
+# rewrites its .git file shorter, which fuse2fs before 1.47.4 corrupted.
 PROXY = 'http://hatchward:gateway-token@127.0.0.1:3128'
 FIXTURE = r"""set -eu
 git config --global init.defaultBranch main
 git config --global url.file:///tmp/fixture/.insteadOf https://github.com/hatchward-fixture/
+git config --global protocol.file.allow always
 [ "${MAKE_FIXTURE:-0}" = 1 ] || exit 0
 cd /tmp
+git init -q sub && cd sub && echo sub > SUB && git add . && git commit -qm sub
+cd /tmp && git clone -q --bare --no-hardlinks sub fixture/sub.git
 git init -q work && cd work && echo main > README && git add .
+git submodule -q add https://github.com/hatchward-fixture/sub.git sub
 git commit -qm main && git checkout -qb feature
 echo feature > README && git commit -qam feature && git checkout -q main
 cd /tmp && git clone -q --bare --no-hardlinks work fixture/repo.git
@@ -167,10 +176,13 @@ assert git('rev-parse','HEAD')==git('rev-parse','origin/feature')
 assert git('symbolic-ref','refs/remotes/origin/HEAD')=='refs/remotes/origin/main'
 assert git('config','remote.origin.url')=='https://github.com/hatchward-fixture/repo.git'
 assert git('status','--porcelain')==''
+assert pathlib.Path('sub/SUB').read_text()=='sub\n'
+assert pathlib.Path('sub/.git').read_text()=='gitdir: ../.git/modules/sub\n'
+assert git('-C','sub','status','--porcelain')==''
 assert all(p.stat().st_uid==1000 for p in pathlib.Path('/workspace').rglob('*'))
 assert os.environ['AGENT_REPO']=='hatchward-fixture/repo'
 git('commit','-q','--allow-empty','-m','agent commit')
-print('PASS routed repository clone, base branch, agent ownership, agent commit')"""
+print('PASS routed repository clone, base branch, submodule, agent ownership, agent commit')"""
 
 
 def configure_clone(container, env):
