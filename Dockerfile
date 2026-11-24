@@ -17,6 +17,34 @@
 # debian:trixie-slim, multi-arch manifest-list digest
 # (`docker buildx imagetools inspect debian:trixie-slim`). Bump deliberately;
 # Dependabot's docker ecosystem proposes the bumps.
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS fuse2fs
+
+# fuse2fs from source: trixie ships 1.47.2, which ignores O_TRUNC on open (a
+# shorter rewrite keeps the old tail, corrupting git submodule .git files and
+# any `>` over an existing file). 1.47.4 is only in forky/sid, with no trixie
+# backport. Pinned release tarball, checksum from the release's signed
+# sha256sums.asc (mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/
+# e2fsprogs/); bump both lines together. libext2fs is linked statically, so
+# only this one binary replaces Debian's fuse2fs package.
+ARG TARGETARCH
+ARG E2FSPROGS_VERSION=1.47.4
+ARG E2FSPROGS_SHA256=fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b
+RUN --mount=type=cache,target=/var/cache/apt,id=apt-cache-$TARGETARCH,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,id=apt-lib-$TARGETARCH,sharing=locked \
+    apt-get update -qq && \
+    apt-get install --no-install-recommends --no-install-suggests -y \
+      ca-certificates curl xz-utils build-essential pkg-config \
+      libfuse3-dev uuid-dev libblkid-dev
+RUN curl -fsSL "https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v${E2FSPROGS_VERSION}/e2fsprogs-${E2FSPROGS_VERSION}.tar.xz" \
+      -o /tmp/e2fsprogs.tar.xz && \
+    echo "$E2FSPROGS_SHA256  /tmp/e2fsprogs.tar.xz" | sha256sum -c - && \
+    mkdir /src && tar -xJf /tmp/e2fsprogs.tar.xz -C /src --strip-components=1 && \
+    cd /src && \
+    ./configure --quiet --enable-fuse2fs --disable-libuuid --disable-libblkid \
+      --disable-nls --disable-e2initrd-helper && \
+    make -j"$(nproc)" libs && make -C misc fuse2fs && \
+    install -D -m 0755 misc/fuse2fs /out/fuse2fs
+
 FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 
 ARG TARGETARCH
@@ -40,7 +68,7 @@ RUN --mount=type=cache,target=/var/cache/apt,id=apt-cache-$TARGETARCH,sharing=lo
     apt-get update -qq && \
     apt-get install --no-install-recommends --no-install-suggests -y \
       git git-lfs gh jq procps tini iptables iproute2 openssl unzip \
-      python3 fuse2fs e2fsprogs fuse3 util-linux \
+      python3 e2fsprogs fuse3 util-linux \
       build-essential pkg-config \
       libssl-dev zlib1g-dev libffi-dev libyaml-dev libreadline-dev libgmp-dev \
       libpq-dev libsqlite3-dev && \
@@ -92,6 +120,7 @@ COPY --chmod=644 allow-ranges.d/github /etc/hatchward/allow-ranges.d/github
 
 COPY --chmod=644 runtime/*.py /usr/local/lib/hatchward/runtime/
 COPY --chmod=755 runtime/bootstrap.sh /usr/local/bin/hatchward-bootstrap
+COPY --from=fuse2fs --chmod=755 /out/fuse2fs /usr/local/bin/fuse2fs
 COPY --chmod=755 runtime/fuse2fs.sh /usr/local/bin/hatchward-fuse2fs
 COPY --chmod=755 runtime/channel.sh /usr/local/bin/hatchward-channel
 COPY --chmod=755 runtime/import.sh /usr/local/bin/hatchward-import

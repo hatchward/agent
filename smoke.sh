@@ -88,6 +88,13 @@ contains "$out" "NoNewPrivs:	1" "no_new_privs"
 contains "$(cat "$last_stderr")" "init-firewall: default-DROP active" "firewall summary on stderr"
 pass "runs as agent with no capabilities, no sudo, no_new_privs"
 
+# The portable runtime's fuse2fs is the source-built one: trixie's 1.47.2
+# ignores O_TRUNC (docker_runtime.py exercises the bug itself).
+out="$(docker run --rm --entrypoint fuse2fs "$base" -V 2>&1)"
+out="${out%%$'\n'*}"
+case "$out" in "fuse2fs 1.47.4 "*) ;; *) fail "unexpected fuse2fs: $out" ;; esac
+pass "portable runtime ships $out"
+
 # 2. Self-clone of a public repository through the firewall.
 out="$(docker run --rm "${CAPS[@]}" -e AGENT_REPO=octocat/Hello-World "$base" \
   sh -c 'printf "head=%s\n" "$(git -C /workspace rev-parse HEAD)"; printf "git_owner=%s\n" "$(stat -c %U /workspace/.git)"' 2>"$last_stderr")"
