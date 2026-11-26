@@ -5,6 +5,26 @@ All notable changes to the agent images are documented here. Format follows
 [Semantic Versioning](https://semver.org/). Each entry is condensed from that version's
 `.github/releases/<tag>.md`, which the publish job turns into the GitHub release.
 
+## [Unreleased]
+
+### Added
+- `hatchward-configure` accepts `declaredEnv`: declared-secret env names whose values
+  are per-secret sentinels (`hatchward-secret-<name>`), refusing reserved names.
+- Companion endpoints: `hatchward-configure` accepts `endpoints` (Unix or loopback
+  TCP listeners, with runner-generated env values), writes `endpoints.json`, socket
+  links and an SSH configuration pinned to host keys into `/run/hatchward`, and waits
+  for the gateway's new `reload.sock` to bind them. Endpoint traffic opens a host
+  channel of the new kind `C` plus an index byte.
+- `openssh-client` and `hatchward-connect`, an HTTP `CONNECT` helper for
+  `ProxyCommand` through `$HTTPS_PROXY`.
+- Labels `org.hatchward.agent.features="declared-env,endpoints,ssh-client"` and
+  `org.hatchward.agent.slots="48"`.
+
+### Changed
+- The gateway accepts up to 48 host helper slots (was 16). A runner never keeps more
+  helpers than the slots label, so older runners' pools of 16 are unaffected.
+  Additive; configuration without the new keys behaves as in 0.6.0.
+
 ## [0.6.0]
 
 ### Added
