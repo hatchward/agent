@@ -68,7 +68,7 @@ RUN --mount=type=cache,target=/var/cache/apt,id=apt-cache-$TARGETARCH,sharing=lo
     apt-get update -qq && \
     apt-get install --no-install-recommends --no-install-suggests -y \
       git git-lfs gh jq procps tini iptables iproute2 openssl unzip \
-      python3 e2fsprogs fuse3 util-linux \
+      python3 e2fsprogs fuse3 util-linux openssh-client \
       build-essential pkg-config \
       libssl-dev zlib1g-dev libffi-dev libyaml-dev libreadline-dev libgmp-dev \
       libpq-dev libsqlite3-dev && \
@@ -126,15 +126,26 @@ COPY --chmod=755 runtime/channel.sh /usr/local/bin/hatchward-channel
 COPY --chmod=755 runtime/import.sh /usr/local/bin/hatchward-import
 COPY --chmod=755 runtime/configure.sh /usr/local/bin/hatchward-configure
 COPY --chmod=755 runtime/run.sh /usr/local/bin/hatchward-run
+COPY --chmod=755 runtime/connect.sh /usr/local/bin/hatchward-connect
+# ssh reads the SSH remotes hatchward-configure pins, if any (none: the Include matches nothing).
+RUN printf 'Include /run/hatchward/ssh_config\n' > /etc/ssh/ssh_config.d/hatchward.conf && \
+    chmod 0644 /etc/ssh/ssh_config.d/hatchward.conf
 RUN useradd --uid 10002 --user-group --no-create-home --shell /usr/sbin/nologin hatchward-bridge && \
     mkdir -p /hatchward-backing /hatchward-bounded && chmod 0700 /hatchward-backing && \
     chmod 0755 /usr/local/lib/hatchward/runtime
 
 # contract=3 adds portable execution; the standard entrypoint is preserved.
 # clone=1: portable hatchward-run clones a configured AGENT_REPO itself.
-# See docs/portable-runtime.md for the explicit portable launch contract.
+# features: hatchward-configure accepts declaredEnv (declared-env) and companion
+# endpoints (endpoints), and the image carries ssh + hatchward-connect (ssh-client).
+# slots: host helper slots the gateway accepts; the build fails if gateway.py's
+# SLOTS differs. See docs/portable-runtime.md for the portable launch contract.
+ARG HATCHWARD_SLOTS=48
+RUN grep -qx "SLOTS = ${HATCHWARD_SLOTS}" /usr/local/lib/hatchward/runtime/gateway.py
 LABEL org.hatchward.agent.contract="3" \
       org.hatchward.agent.clone="1" \
+      org.hatchward.agent.features="declared-env,endpoints,ssh-client" \
+      org.hatchward.agent.slots="${HATCHWARD_SLOTS}" \
       org.opencontainers.image.source="https://github.com/hatchward/agent"
 
 WORKDIR /workspace

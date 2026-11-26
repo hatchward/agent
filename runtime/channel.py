@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Bounded framed host stdio channel to the private raw gateway socket.
 
+The gateway first sends a header: P (proxy), A (actions), or C plus one endpoint
+index byte (companion). It is copied to stdout before any frame.
+
 Docker exec does not expose a subprocess stdout half-close until process exit.
 Explicit D(length,payload)/F(0) frames therefore carry directional EOF. Actual
 stdin EOF cancels the channel, including before assignment.
@@ -13,6 +16,14 @@ import struct
 
 LIMIT = 65536
 HEADER = 5
+KINDS = (b'P', b'A', b'C')
+
+
+def header_complete(header):
+    """True once the channel header is whole; raise on an unknown kind."""
+    if header[:1] not in KINDS:
+        raise ValueError('unknown channel kind')
+    return len(header) == (2 if header[:1] == b'C' else 1)
 
 
 def frame(kind, payload=b''):
@@ -26,6 +37,7 @@ def relay(sock):
     encoded = bytearray()
     outgoing = bytearray()
     incoming = bytearray()
+    header = bytearray()
     started = input_finished = peer_finished = write_closed = False
     while True:
         # Consume at most one bounded payload while the previous drains.
@@ -72,10 +84,15 @@ def relay(sock):
         if sock in readable:
             data = sock.recv(LIMIT if started else 1)
             if not started:
-                if data not in (b'P', b'A'):
+                if not data:
                     return 1
-                started = True
-                incoming.extend(data)
+                header.extend(data)
+                try:
+                    started = header_complete(header)
+                except ValueError:
+                    return 1
+                if started:
+                    incoming.extend(header)
             elif data:
                 incoming.extend(frame(b'D', data))
             else:
