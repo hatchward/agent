@@ -62,8 +62,11 @@ Images labelled `org.hatchward.agent.features="declared-env,endpoints,ssh-client
 accept two more `hatchward-configure` keys. Every other key is still rejected.
 
 - **`declaredEnv`** (`declared-env`): a list of at most 16 `{"name", "sentinel"}`
-  entries. `sentinel` must be exactly `hatchward-secret-` + the lowercased name; the
-  host proxy swaps it for the value. `name` must match `^[A-Z][A-Z0-9_]{0,63}$` and
+  entries. `sentinel` is the declared secret's own sentinel,
+  `hatchward-secret-<secret name>` (`^hatchward-secret-[a-z][a-z0-9_]{1,63}$`), unique
+  across entries; it comes from the secret's name, not the env name, so
+  `REGISTRY_TOKEN=hatchward-secret-npm_token` is valid. The host proxy swaps it for
+  the value. `name` must match `^[A-Z][A-Z0-9_]{0,63}$` and
   must not be `PATH`, `HOME`, `USER`, `SHELL`, `NODE_OPTIONS`, `BASH_ENV`, `ENV`,
   `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, or start with `LD_`, `GIT_`,
   `AGENT_`, `HATCHWARD_`, `ANTHROPIC_`, `CLAUDE_`, `GH_`, `GITHUB_` or `SSH_`.

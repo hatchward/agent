@@ -14,7 +14,8 @@ from urllib.parse import quote, urlsplit
 
 RUN = Path('/run/hatchward')
 SENTINEL = 'hatchward-proxy-managed'
-DECLARED_SENTINEL = 'hatchward-secret-'
+# Per-secret sentinel: derived from the secret's name, not the env name it is bound to (spec §5.3).
+DECLARED_SENTINEL = re.compile(r'hatchward-secret-[a-z][a-z0-9_]{1,63}')
 ALLOWED = {'GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'}
 # Real (non-sentinel) values naming the repository hatchward-run clones.
 REPOSITORY_KEYS = {'AGENT_REPO', 'AGENT_BASE_BRANCH'}
@@ -72,16 +73,16 @@ def exact_keys(value, required, optional=()):
 
 
 def validate_declared_env(entries):
-    """Each declared secret's env name carries only its own per-secret sentinel."""
+    """Each declared secret's env name carries only that secret's sentinel, one env per secret."""
     result = {}
     for entry in bounded_list(entries, 'declaredEnv'):
         exact_keys(entry, ('name', 'sentinel'))
-        name = entry['name']
+        name, sentinel = entry['name'], entry['sentinel']
         if not valid_env_name(name) or name in result:
             raise ValueError('declared env name is reserved, invalid or duplicated')
-        if entry['sentinel'] != DECLARED_SENTINEL + name.lower():
-            raise ValueError('declared env value must be its own sentinel')
-        result[name] = entry['sentinel']
+        if not isinstance(sentinel, str) or not DECLARED_SENTINEL.fullmatch(sentinel) or sentinel in result.values():
+            raise ValueError('declared env value must be a unique per-secret sentinel')
+        result[name] = sentinel
     return result
 
 

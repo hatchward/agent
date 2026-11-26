@@ -125,9 +125,22 @@ class DeclaredEnvTests(unittest.TestCase):
 
     def test_rejects_bad_sentinels(self):
         for sentinel in ('real-secret', module.SENTINEL, 'hatchward-secret-NPM_TOKEN',
-                         'hatchward-secret-other', 'hatchward-secret-npm_token\n', '', None):
+                         'hatchward-secret-npm_token\n', 'hatchward-secret-', 'hatchward-secret-x',
+                         'hatchward-secret-1npm', 'hatchward-secret-npm-token', 'hatchward-secret-' + 'a' * 65,
+                         'prefix-hatchward-secret-npm_token', '', None, 7):
             with self.subTest(sentinel=sentinel), self.assertRaises(ValueError):
                 module.validate_config(config(declaredEnv=[{'name': 'NPM_TOKEN', 'sentinel': sentinel}]))
+
+    def test_sentinel_comes_from_secret_name_not_env_name(self):
+        _, _, env, _ = module.validate_config(config(
+            declaredEnv=[{'name': 'REGISTRY_TOKEN', 'sentinel': 'hatchward-secret-npm_token'}]))
+        self.assertEqual(env, {'REGISTRY_TOKEN': 'hatchward-secret-npm_token'})
+
+    def test_rejects_duplicate_sentinels(self):
+        with self.assertRaises(ValueError):
+            module.validate_config(config(declaredEnv=[
+                {'name': 'NPM_TOKEN', 'sentinel': 'hatchward-secret-npm_token'},
+                {'name': 'REGISTRY_TOKEN', 'sentinel': 'hatchward-secret-npm_token'}]))
 
     def test_rejects_duplicates_and_requires_proxy(self):
         entry = {'name': 'NPM_TOKEN', 'sentinel': 'hatchward-secret-npm_token'}

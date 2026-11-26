@@ -235,7 +235,7 @@ finally:
 HOST_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl'
 ENDPOINTS = r"""import json,os,pathlib,socket,stat,subprocess
 run=pathlib.Path('/run/hatchward')
-assert os.environ['NPM_TOKEN']=='hatchward-secret-npm_token'
+assert os.environ['REGISTRY_TOKEN']=='hatchward-secret-npm_token'
 assert os.environ['SSH_AUTH_SOCK']=='/run/hatchward/ssh-agent.sock'
 assert os.environ['PGHOST']=='127.0.10.1' and os.environ['PGPORT']=='5432'
 for name in ['endpoints.json','ssh_config','known_hosts']:
@@ -276,7 +276,7 @@ try:
     ca = docker('exec', endpoints_name, 'openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout',
                 '/dev/null', '-subj', '/CN=hatchward-test', '-days', '1', '-out', '/dev/stdout').stdout.decode()
     config = {'ca': ca, 'proxyUrl': PROXY,
-              'declaredEnv': [{'name': 'NPM_TOKEN', 'sentinel': 'hatchward-secret-npm_token'}],
+              'declaredEnv': [{'name': 'REGISTRY_TOKEN', 'sentinel': 'hatchward-secret-npm_token'}],
               'endpoints': [
                   {'index': 0, 'name': 'ssh-agent', 'listen': {'unix': 'ssh-agent'},
                    'env': {'SSH_AUTH_SOCK': '/run/hatchward/ssh-agent.sock'},

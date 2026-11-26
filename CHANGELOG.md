@@ -9,7 +9,8 @@ All notable changes to the agent images are documented here. Format follows
 
 ### Added
 - `hatchward-configure` accepts `declaredEnv`: declared-secret env names whose values
-  are per-secret sentinels (`hatchward-secret-<name>`), refusing reserved names.
+  are per-secret sentinels (`hatchward-secret-<secret name>`, unique per entry; the env
+  name is chosen independently), refusing reserved names.
 - Companion endpoints: `hatchward-configure` accepts `endpoints` (Unix or loopback
   TCP listeners, with runner-generated env values), writes `endpoints.json`, socket
   links and an SSH configuration pinned to host keys into `/run/hatchward`, and waits
