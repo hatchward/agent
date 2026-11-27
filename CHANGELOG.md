@@ -7,6 +7,8 @@ All notable changes to the agent images are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.7.0]
+
 ### Added
 - `hatchward-configure` accepts `declaredEnv`: declared-secret env names whose values
   are per-secret sentinels (`hatchward-secret-<secret name>`, unique per entry; the env
@@ -18,13 +20,19 @@ All notable changes to the agent images are documented here. Format follows
   channel of the new kind `C` plus an index byte.
 - `openssh-client` and `hatchward-connect`, an HTTP `CONNECT` helper for
   `ProxyCommand` through `$HTTPS_PROXY`.
+- Contract-3 images clone a routed repository: `AGENT_REPO` and `AGENT_BASE_BRANCH` in
+  the configure `env` make `hatchward-run` clone it, with submodules, before the image
+  command. Label `org.hatchward.agent.clone="1"`.
 - Labels `org.hatchward.agent.features="declared-env,endpoints,ssh-client"` and
   `org.hatchward.agent.slots="48"`.
 
 ### Changed
 - The gateway accepts up to 48 host helper slots (was 16). A runner never keeps more
   helpers than the slots label, so older runners' pools of 16 are unaffected.
-  Additive; configuration without the new keys behaves as in 0.6.0.
+- fuse2fs is built from e2fsprogs 1.47.4, so `O_TRUNC` truncates; trixie's 1.47.2 left
+  stale bytes on overwrite.
+- The bounded filesystem mounts with fuse2fs `fakeroot`, so git can write objects.
+- Additive; configuration without the new keys behaves as in 0.6.0. Contract stays 3.
 
 ## [0.6.0]
 
