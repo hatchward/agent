@@ -228,3 +228,80 @@ try:
     print('PASS clone failure: non-zero, one credential-free stderr line, image command not run:', stderr.strip())
 finally:
     remove(failed_name)
+
+# Declared env and companion endpoints under the real privilege model: configure
+# (uid 0, no capabilities) writes the table, links and SSH files into root-owned
+# /run/hatchward, and the uid-10002 gateway binds the listeners on reload.sock.
+HOST_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl'
+ENDPOINTS = r"""import json,os,pathlib,socket,stat,subprocess
+run=pathlib.Path('/run/hatchward')
+assert os.environ['REGISTRY_TOKEN']=='hatchward-secret-npm_token'
+assert os.environ['SSH_AUTH_SOCK']=='/run/hatchward/ssh-agent.sock'
+assert os.environ['PGHOST']=='127.0.10.1' and os.environ['PGPORT']=='5432'
+for name in ['endpoints.json','ssh_config','known_hosts']:
+ info=(run/name).stat()
+ assert info.st_uid==0 and stat.S_IMODE(info.st_mode)==0o444,(name,info)
+assert os.readlink(run/'ssh-agent.sock')=='/run/hatchward/gateway/ssh-agent.sock'
+assert (run/'ssh-agent.sock').lstat().st_uid==0
+assert (run/'gateway/ssh-agent.sock').stat().st_uid==10002
+try: (run/'endpoints.json').write_text('{}')
+except OSError: pass
+else: raise AssertionError('workload rewrote the endpoint table')
+# Reload is public but only binds what the root-owned table names.
+with socket.socket(socket.AF_UNIX) as s:
+ s.settimeout(5);s.connect(str(run/'gateway/reload.sock'));assert s.recv(1)==b'1'
+ssh=subprocess.run(['ssh','-G','-p','443','ssh.github.com'],capture_output=True,text=True,check=True).stdout.splitlines()
+for line in ['proxycommand /usr/local/bin/hatchward-connect %h %p','stricthostkeychecking true',
+             'userknownhostsfile /run/hatchward/known_hosts','identityagent /run/hatchward/ssh-agent.sock','port 443']:
+ assert line in ssh,(line,ssh)
+# ssh reaches the pinned host only through hatchward-connect's CONNECT, with the proxy's Basic credentials.
+import threading
+fake=socket.create_server(('127.0.0.2',8080));seen=[]
+def serve():
+ c,_=fake.accept();seen.append(c.recv(4096));c.sendall(b'HTTP/1.1 200 OK\r\n\r\nSSH-2.0-fake\r\n');c.close()
+threading.Thread(target=serve,daemon=True).start()
+env=dict(os.environ,HTTPS_PROXY='http://hatchward:gateway-token@127.0.0.2:8080')
+result=subprocess.run(['ssh','-o','BatchMode=yes','git@ssh.github.com'],env=env,capture_output=True,text=True,timeout=20)
+assert result.returncode!=0 and seen and seen[0].startswith(b'CONNECT ssh.github.com:443 HTTP/1.1\r\n'),(seen,result.stderr)
+assert b'Proxy-Authorization: Basic aGF0Y2h3YXJkOmdhdGV3YXktdG9rZW4=' in seen[0],seen
+s=socket.create_connection(('127.0.10.1',5432),timeout=5);s.sendall(b'q');s.close()
+print('PASS declared env, endpoint table, links, ssh_config via hatchward-connect, public reload')"""
+
+endpoints_name = name + '-endpoints'
+try:
+    labels = json.loads(docker('image', 'inspect', image, '--format', '{{json .Config.Labels}}').stdout)
+    assert labels['org.hatchward.agent.features'] == 'declared-env,endpoints,ssh-client', labels
+    assert labels['org.hatchward.agent.slots'] == '48', labels
+    start(endpoints_name)
+    ca = docker('exec', endpoints_name, 'openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout',
+                '/dev/null', '-subj', '/CN=hatchward-test', '-days', '1', '-out', '/dev/stdout').stdout.decode()
+    config = {'ca': ca, 'proxyUrl': PROXY,
+              'declaredEnv': [{'name': 'REGISTRY_TOKEN', 'sentinel': 'hatchward-secret-npm_token'}],
+              'endpoints': [
+                  {'index': 0, 'name': 'ssh-agent', 'listen': {'unix': 'ssh-agent'},
+                   'env': {'SSH_AUTH_SOCK': '/run/hatchward/ssh-agent.sock'},
+                   'sshHosts': [{'host': 'ssh.github.com', 'port': 443, 'hostKeys': [HOST_KEY]}]},
+                  {'index': 1, 'name': 'pg', 'listen': {'tcp': 5432, 'address': '127.0.10.1'},
+                   'env': {'PGHOST': '127.0.10.1', 'PGPORT': '5432'}}]}
+    forged = json.loads(json.dumps(config))
+    forged['endpoints'][1]['env']['PGHOST'] = 'db.acme.example'
+    assert docker('exec', '-i', endpoints_name, 'hatchward-configure', check=False,
+                  data=json.dumps(forged).encode()).returncode != 0
+    docker('exec', '-i', endpoints_name, 'hatchward-configure', data=json.dumps(config).encode())
+    # A host helper receives `C` + the endpoint index when the agent dials the endpoint.
+    helper = subprocess.Popen(['docker', 'exec', '-i', endpoints_name, '/usr/local/bin/hatchward-channel'],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    for _ in range(40):
+        if docker('exec', endpoints_name, 'test', '-e', '/run/hatchward/bridge/channels.ready',
+                  check=False).returncode == 0:
+            break
+        time.sleep(.25)
+    print(docker('exec', '-i', endpoints_name, 'hatchward-run', '/usr/bin/python3', '-c', ENDPOINTS,
+                 data=b'{"agent":{}}').stdout.decode())
+    assert helper.stdout.read(2) == b'C\x01'
+    assert helper.stdout.read(5) == b'D\x00\x00\x00\x01'
+    helper.kill()
+    helper.wait()
+    print('PASS endpoint traffic opens a C channel with its index')
+finally:
+    remove(endpoints_name)

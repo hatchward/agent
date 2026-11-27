@@ -31,8 +31,10 @@ channel replenishment.
 The gateway runs as uid 10002, separately from workload uid 1000. It accepts only
 loopback proxy and assignment action traffic. Host channel attachment requires
 access to `/run/hatchward/bridge/control.sock` inside a private 0700 directory;
-the workload cannot attach to it. Sixteen single-use Docker exec channels carry
-bytes to fixed host endpoints. The channel starts with a P/A dispatch byte, then
+the workload cannot attach to it. Up to `org.hatchward.agent.slots` (48)
+single-use Docker exec channels carry bytes to fixed host endpoints. The channel
+starts with a P (proxy) or A (actions) dispatch byte, or C plus one endpoint index
+byte for a companion endpoint (below), then
 uses bounded D data frames and F half-close frames (one-byte kind, four-byte
 big-endian length). Explicit half-close avoids Docker exec stdout waiting for
 process exit before the peer can send its response. `/run/hatchward/actions.sock` points at the
@@ -53,6 +55,66 @@ uid 1000 with empty capabilities. The runner removes the assignment container an
 private volume on completion or cancellation. A gateway or FUSE child exit terminates
 the supervisor so daemon failure cannot silently leave a usable sandbox; ordinary
 adopted workload children are reaped without terminating the assignment.
+
+## Declared secrets and companion endpoints (`org.hatchward.agent.features`)
+
+Images labelled `org.hatchward.agent.features="declared-env,endpoints,ssh-client"`
+accept two more `hatchward-configure` keys. Every other key is still rejected.
+
+- **`declaredEnv`** (`declared-env`): a list of at most 16 `{"name", "sentinel"}`
+  entries. `sentinel` is the declared secret's own sentinel,
+  `hatchward-secret-<secret name>` (`^hatchward-secret-[a-z][a-z0-9_]{1,63}$`), unique
+  across entries; it comes from the secret's name, not the env name, so
+  `REGISTRY_TOKEN=hatchward-secret-npm_token` is valid. The host proxy swaps it for
+  the value. `name` must match `^[A-Z][A-Z0-9_]{0,63}$` and
+  must not be `PATH`, `HOME`, `USER`, `SHELL`, `NODE_OPTIONS`, `BASH_ENV`, `ENV`,
+  `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, or start with `LD_`, `GIT_`,
+  `AGENT_`, `HATCHWARD_`, `ANTHROPIC_`, `CLAUDE_`, `GH_`, `GITHUB_` or `SSH_`.
+  Requires the proxy and CA.
+- **`endpoints`** (`endpoints`): at most 32 entries
+  `{"index", "name", "listen", "env"?, "sshHosts"?}`.
+  - `index` is a unique byte (0–255): the runner's endpoint-table index.
+  - `name` matches `^[a-z][a-z0-9-]{0,31}$` and is unique.
+  - `listen` is `{"unix": NAME}` (same pattern; not `actions`, `reload` or `control`)
+    or `{"tcp": PORT, "address"?: ADDR}`: port 1024–65535, address in `127.0.0.0/8`
+    (default `127.0.0.1`), never `127.0.0.1:3128`, no two endpoints on one listener.
+  - `env` (at most 8) holds values the runner generated from the listener, so each
+    must equal the endpoint's own address, port, socket path
+    (`/run/hatchward/NAME.sock`) or URL host (the address, or the percent-encoded
+    socket path). Names follow the `declaredEnv` rules and are unique across `env`,
+    `declaredEnv` and every endpoint. The one exception is `SSH_AUTH_SOCK`, accepted
+    only on a Unix endpoint and only naming that endpoint's own socket.
+  - `sshHosts` (`ssh-client`; at most 4, requires the proxy):
+    `{"host", "port", "hostKeys"}` with a lowercase hostname, a port 1–65535 and 1–8
+    pinned OpenSSH public keys.
+
+With endpoints, `hatchward-configure` (uid 0, no capabilities) writes, into the
+root-owned `/run/hatchward`:
+
+- `endpoints.json` (`0444`): `{"endpoints": [{"index", "name", "unix" | "tcp" + "address"}]}`;
+- for each Unix endpoint, a symlink `/run/hatchward/NAME.sock` →
+  `/run/hatchward/gateway/NAME.sock`;
+- with `sshHosts`, `ssh_config` and `known_hosts` (`0444`). Each host gets
+  `ProxyCommand /usr/local/bin/hatchward-connect %h %p`, `UserKnownHostsFile
+  /run/hatchward/known_hosts`, `StrictHostKeyChecking yes`, its `Port` when only one
+  is pinned, and `IdentityAgent` when the endpoint is a Unix socket. The image's
+  `/etc/ssh/ssh_config.d/hatchward.conf` includes it.
+
+It then connects to `/run/hatchward/gateway/reload.sock` and waits up to 5 s for the
+byte `1`. Anything else, or a timeout, exits non-zero, and `config.json` is not
+written, so `hatchward-run` refuses to start. The gateway (uid 10002) answers each
+`reload.sock` connection by re-reading `endpoints.json`, binding the listeners it has
+not bound yet (Unix sockets `0666` under `/run/hatchward/gateway/`, TCP on the
+loopback address), and replying `1`, or `0` if the table is missing or invalid, a
+bind fails, or an already-bound index changed. Reload is idempotent and binds only
+what the root-owned table names, so the socket is `0666`. A connection to an
+endpoint listener waits for a host channel like proxy and action traffic do, and
+opens it with `C` plus the endpoint's index. The declared and endpoint env join the
+image command's environment.
+
+`hatchward-connect HOST PORT` opens an HTTP `CONNECT` through `$HTTPS_PROXY`, sending
+the proxy URL's user and password as `Proxy-Authorization: Basic`, and relays stdio
+over the tunnel. A non-2xx answer exits non-zero with the status line.
 
 ## Routed repository (`org.hatchward.agent.clone="1"`)
 
