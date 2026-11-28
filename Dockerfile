@@ -17,7 +17,7 @@
 # debian:trixie-slim, multi-arch manifest-list digest
 # (`docker buildx imagetools inspect debian:trixie-slim`). Bump deliberately;
 # Dependabot's docker ecosystem proposes the bumps.
-FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS fuse2fs
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS fuse2fs
 
 # fuse2fs from source: trixie ships 1.47.2, which ignores O_TRUNC on open (a
 # shorter rewrite keeps the old tail, corrupting git submodule .git files and
@@ -45,7 +45,7 @@ RUN curl -fsSL "https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2
     make -j"$(nproc)" libs && make -C misc fuse2fs && \
     install -D -m 0755 misc/fuse2fs /out/fuse2fs
 
-FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
 
 ARG TARGETARCH
 ARG AGENT_UID=1000
